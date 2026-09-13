@@ -40,7 +40,7 @@
               <div id="roi" class="roi" hidden><span>采样区域</span></div>
               <div id="preview-empty" class="preview-empty"><span class="camera-glyph" aria-hidden="true">◎</span><span>开始后显示相机预览</span></div>
             </div>
-            <label class="field-label" for="camera">摄像头</label><select id="camera"><option value="">优先使用后置摄像头</option></select>
+            <div class="camera-lock"><span>默认摄像头 · 已锁定</span><strong id="camera-name">手机使用后置摄像头</strong></div>
             <p class="caption">采集中央区域的红通道。光照不足或波形不稳定时，心率会暂时留空。</p>
           </section>
           <section class="card export-card"><h2>保存本次数据</h2><p class="caption">视频不上传。波形、心率和原始 RGB 均值可以单独下载。</p>
@@ -50,7 +50,7 @@
         </aside>
       </div>
       <details class="help"><summary>使用提示与测量说明</summary><div class="help-body">
-        <p>首次使用允许浏览器访问摄像头。多镜头手机可在停止采集后切换摄像头，确认手指覆盖了正在使用的镜头。不使用补光灯时，请保持足够、稳定的环境光。</p>
+        <p>首次使用允许浏览器访问摄像头。手机固定使用默认后置摄像头，电脑使用系统默认摄像头。页面会记住首次成功开启的摄像头，停止、重新开始或刷新后继续使用同一设备，不提供切换入口。请确认手指覆盖了正在使用的镜头，并保持足够、稳定的环境光。</p>
         <p>首次心率需要 3 秒滤波初始化和至少 5 秒有效波形。实际到帧率取决于手机与浏览器；重采样到 60 Hz 不会提高摄像头实际采样率。</p>
         <p>切换到后台或锁屏会停止采集。单次最多 5 分钟。重新开始会建立新会话，刷新或关闭页面会丢失尚未下载的数据，请先导出需要保留的结果。</p>
         <p>手机请通过 HTTPS 地址访问本页；电脑本机可以使用 localhost。若微信内置浏览器无法采集，请在 Safari 或 Chrome 中打开同一地址。</p>

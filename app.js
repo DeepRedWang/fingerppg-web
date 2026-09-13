@@ -2,6 +2,7 @@
 (function () {
   'use strict';
   const $ = id => document.getElementById(id);
+  const CAMERA_KEY = 'fingerppg.default-camera.v1';
   class WebPPG {
     constructor() {
       this.video = $('video'); this.canvas = $('wave'); this.ctx = this.canvas.getContext('2d');
@@ -10,6 +11,10 @@
       this.rows = []; this.history = []; this.frames = []; this.arrivals = [];
       this.running = false; this.starting = false; this.token = 0; this.worker = null; this.stream = null;
       this.callbackId = null; this.timer = null; this.healthTimer = null; this.wakeLock = null;
+      this.cameraId = '';
+      try { this.cameraId = window.localStorage.getItem(CAMERA_KEY) || ''; } catch (_) {}
+      this.mobileCamera = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '') ||
+        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
       $('start').addEventListener('click', () => this.running || this.starting ? this.stop('已停止 · 可下载本次数据') : this.startCamera());
       $('demo').addEventListener('click', () => this.startDemo());
       $('export').addEventListener('click', () => this.exportData());
@@ -69,7 +74,7 @@
     }
     setRunning() {
       this.running = true; this.starting = false;
-      $('start').textContent = '停止采集'; $('start').disabled = false; $('demo').disabled = true; $('camera').disabled = true;
+      $('start').textContent = '停止采集'; $('start').disabled = false; $('demo').disabled = true;
       if (navigator.wakeLock && navigator.wakeLock.request) {
         const token = this.token;
         navigator.wakeLock.request('screen').then(lock => {
@@ -81,11 +86,11 @@
       if (this.running || this.starting) return;
       if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { this.environment(); return; }
       const token = ++this.token;
-      this.starting = true; $('start').textContent = '取消启动'; $('demo').disabled = true; $('camera').disabled = true;
+      this.starting = true; $('start').textContent = '取消启动'; $('demo').disabled = true;
       $('status').textContent = '请求相机权限，请在浏览器提示中允许';
-      const selection = $('camera').value;
+      const selection = this.cameraId;
       const constraints = {audio: false, video: {width: {ideal: 640}, height: {ideal: 480}, frameRate: {ideal: 60, max: 60},
-        ...(selection ? {deviceId: {exact: selection}} : {facingMode: {ideal: 'environment'}})}};
+        ...(selection ? {deviceId: {exact: selection}} : {facingMode: this.mobileCamera ? {exact: 'environment'} : {ideal: 'environment'}})}};
       let stream;
       try {
         stream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -99,37 +104,41 @@
         if (token !== this.token) { stream.getTracks().forEach(item => item.stop()); return; }
         const settings = track.getSettings ? track.getSettings() : {};
         if (settings.torch === true) throw new Error('无法关闭补光灯，请先关闭相机补光后重试');
+        if (!settings.deviceId) throw new Error('当前浏览器无法锁定摄像头，请使用新版 Safari 或 Chrome');
+        if (selection && settings.deviceId !== selection) throw new Error('摄像头与锁定设备不一致，采集已停止');
+        if (this.mobileCamera && settings.facingMode && settings.facingMode !== 'environment')
+          throw new Error('未获得默认后置摄像头，采集已停止');
         this.video.srcObject = stream; await this.video.play();
         if (token !== this.token) { stream.getTracks().forEach(item => item.stop()); return; }
+        // Persist only a successfully opened camera, never a cancelled permission request.
+        this.cameraId = settings.deviceId;
+        try { window.localStorage.setItem(CAMERA_KEY, this.cameraId); } catch (_) {}
+        $('camera-name').textContent = track.label || (this.mobileCamera ? '默认后置摄像头' : '系统默认摄像头');
         this.setupSession('camera'); this.setRunning();
         this.metadata.camera_settings = settings;
+        this.metadata.camera_selection = 'fixed deviceId; no camera switching';
         this.metadata.frame_callback = typeof this.video.requestVideoFrameCallback === 'function' ? 'requestVideoFrameCallback' : 'decoded-frame counter + requestAnimationFrame';
         $('preview-empty').hidden = true; $('roi').hidden = false; $('camera-state').textContent = '采集中';
         $('status').textContent = '等待手指覆盖摄像头';
         track.addEventListener('ended', () => { if (token === this.token && this.running) this.stop('相机已中断，请重新开始'); });
         track.addEventListener('mute', () => { if (token === this.token && this.running) this.stop('相机暂时不可用，请重新开始'); });
-        this.enumerateCameras(settings.deviceId, token);
         this.scheduleCamera(token);
         this.healthTimer = setInterval(() => {
+          if (this.running && track.getSettings().deviceId !== this.cameraId) {
+            this.stop('摄像头已发生变化，采集停止，请重新开始'); return;
+          }
           if (this.running && performance.now() - this.lastFrameWall > (this.receivedFrame ? 2500 : 8000)) this.stop('未收到新的相机帧，请重新开始或更换浏览器');
         }, 500);
       } catch (error) {
         if (stream) stream.getTracks().forEach(track => track.stop());
         if (token !== this.token) return;
         const messages = {NotAllowedError: '未获得摄像头权限，请在浏览器网站设置中允许相机后重试',
-          NotFoundError: '没有找到摄像头', NotReadableError: '摄像头被其他应用占用或暂时无法读取',
-          OverconstrainedError: '该摄像头不支持当前设置，请选择其他摄像头', AbortError: '相机启动已中断'};
+          NotFoundError: selection ? '锁定的摄像头不可用。请检查相机权限；若已重置权限，请清除此网站保存的数据后重新打开' : '没有找到默认摄像头',
+          NotReadableError: '默认摄像头被其他应用占用或暂时无法读取',
+          OverconstrainedError: '默认摄像头不可用或不支持当前设置。请检查相机权限；若已重置权限，请清除此网站保存的数据后重新打开',
+          AbortError: '相机启动已中断'};
         this.stop(messages[error.name] || error.message || '无法启动摄像头');
       }
-    }
-    async enumerateCameras(selected, token) {
-      try {
-        const devices = (await navigator.mediaDevices.enumerateDevices()).filter(item => item.kind === 'videoinput');
-        if (token !== this.token) return;
-        $('camera').replaceChildren(new Option('优先使用后置摄像头', ''));
-        devices.forEach((device, i) => $('camera').add(new Option(device.label || `摄像头 ${i + 1}`, device.deviceId)));
-        $('camera').value = selected || '';
-      } catch (_) {}
     }
     scheduleCamera(token) {
       if (!this.running || token !== this.token) return;
@@ -237,7 +246,7 @@
       this.video.pause(); this.video.srcObject = null;
       if (this.wakeLock) this.wakeLock.release().catch(() => {}); this.wakeLock = null;
       if (this.metadata) this.metadata.stopped_at = new Date().toISOString();
-      $('start').textContent = '开始采集'; $('demo').disabled = false; $('camera').disabled = false;
+      $('start').textContent = '开始采集'; $('demo').disabled = false;
       $('bpm').textContent = '—'; $('status').textContent = message; $('camera-state').textContent = '未开启';
       $('roi').hidden = true; $('preview-empty').hidden = false;
       $('preview-empty').lastElementChild.textContent = '开始后显示相机预览';
