@@ -2,15 +2,22 @@
 (function () {
   'use strict';
   const $ = id => document.getElementById(id);
-  const CAMERA_KEY = 'fingerppg.default-camera.v1';
-  const MOTION_FIELDS = ['ax_m_s2', 'ay_m_s2', 'az_m_s2', 'gx_m_s2', 'gy_m_s2', 'gz_m_s2',
-    'alpha_deg_s', 'beta_deg_s', 'gamma_deg_s'];
+  // v1 could pin a virtual multi-lens camera. Deliberately reselect once after upgrade.
+  const CAMERA_KEY = 'fingerppg.single-camera.v2';
+  const MOTION_FIELDS = ['accel_x_m_s2', 'accel_y_m_s2', 'accel_z_m_s2'];
   const finite = value => Number.isFinite(value) ? value : null;
+  function physicalRearScore(label) {
+    const name = (label || '').trim().toLowerCase();
+    if (/front|user|前|dual|triple|virtual|fusion|双|雙|三摄|三攝|三重|组合|組合|虚拟|虛擬/.test(name)) return 0;
+    if (!/back|rear|environment|后|後|背|rück/.test(name)) return 0;
+    if (/ultra|超广|超廣|tele|长焦|長焦/.test(name)) return 1;
+    if (/wide|广角|廣角|主摄|主攝/.test(name)) return 3;
+    return /^(back camera|rear camera|后置摄像头|后置相机|后置相機|後置相機|後置攝影機|背面相机|背面相機|rückkamera)$/.test(name) ? 2 : 0;
+  }
   class MotionCapture {
-    constructor(onData) {
-      this.onData = onData; this.rows = []; this.history = []; this.active = false;
+    constructor() {
+      this.rows = []; this.history = []; this.active = false;
       this.state = 'idle'; this.message = '点击开始后申请运动权限，与 PPG 一起记录。';
-      $('imu-source').addEventListener('change', () => this.render());
     }
     static permission(enabled) {
       if (!enabled) return Promise.resolve('disabled');
@@ -27,7 +34,8 @@
     reset(mode, origin, enabled) {
       this.stop(); this.rows = []; this.history = []; this.mode = mode; this.origin = origin;
       this.enabled = enabled; this.permission = enabled ? 'pending' : 'disabled';
-      this.nullEvents = 0; this.validEvents = 0; this.lastValid = null; this.lastTime = 0;
+      this.nullEvents = 0; this.validEvents = 0; this.lastValid = null; this.lastEvent = null; this.lastTime = 0;
+      this.restarts = 0; this.consecutiveRestarts = 0; this.lastRestart = origin; this.gaps = [];
       this.state = enabled ? 'waiting' : 'disabled';
       this.message = enabled ? '等待运动权限与传感器数据…' : '本次未启用 IMU';
       this.render();
@@ -44,26 +52,23 @@
         this.listener = event => this.record(event, performance.now());
         window.addEventListener('devicemotion', this.listener);
       }
-      this.timer = setInterval(() => this.tick(), 100);
       this.render();
     }
     record(event, now) {
       if (!this.active) return;
       const row = {time_s: (now - this.origin) / 1000, callback_performance_ms: now,
         event_timestamp_ms: finite(event.timeStamp), reported_interval_ms: finite(event.interval),
-        ax_m_s2: finite(event.acceleration?.x), ay_m_s2: finite(event.acceleration?.y), az_m_s2: finite(event.acceleration?.z),
-        gx_m_s2: finite(event.accelerationIncludingGravity?.x), gy_m_s2: finite(event.accelerationIncludingGravity?.y), gz_m_s2: finite(event.accelerationIncludingGravity?.z),
-        alpha_deg_s: finite(event.rotationRate?.alpha), beta_deg_s: finite(event.rotationRate?.beta), gamma_deg_s: finite(event.rotationRate?.gamma)};
+        accel_x_m_s2: finite(event.accelerationIncludingGravity?.x), accel_y_m_s2: finite(event.accelerationIncludingGravity?.y), accel_z_m_s2: finite(event.accelerationIncludingGravity?.z)};
       row.has_sensor_value = MOTION_FIELDS.some(key => row[key] !== null);
-      this.rows.push(row); this.history.push(row); this.lastTime = row.time_s;
-      if (row.has_sensor_value) { this.validEvents++; this.lastValid = now; this.state = 'receiving'; }
+      if (this.lastEvent !== null && now - this.lastEvent > 250)
+        this.gaps.push({start_s: (this.lastEvent-this.origin)/1000, end_s: row.time_s, duration_ms: now-this.lastEvent});
+      this.rows.push(row); this.lastTime = row.time_s; this.lastEvent = now;
+      if (row.has_sensor_value) { this.validEvents++; this.lastValid = now; this.state = 'receiving'; this.consecutiveRestarts = 0; }
       else this.nullEvents++;
-      while (this.history.length && this.history[0].time_s < row.time_s - 12) this.history.shift();
       // Bound memory even if a device emits unusually fast motion events.
       if (this.rows.length >= 120000) {
-        this.stop(); this.state = 'limit'; this.message = 'IMU 已达 120,000 条上限并停止；PPG 继续，可导出数据'; this.render();
+        this.stop(); this.state = 'limit'; this.message = '加速度已达 120,000 条上限并停止；PPG 继续，可导出数据';
       }
-      if (this.onData) this.onData();
     }
     tick() {
       if (!this.active) return;
@@ -73,13 +78,18 @@
         const end = Math.min(this.lastTime, 300);
         while (this.active && this.demoIndex / 50 <= end) {
           const t = this.demoIndex++ / 50, s = Math.sin(2 * Math.PI * 1.2 * t), c = Math.cos(2 * Math.PI * 1.2 * t);
-          this.record({timeStamp: null, interval: 20, acceleration: {x: .12*s, y: .08*c, z: .2*s},
-            accelerationIncludingGravity: {x: .12*s, y: .08*c, z: 9.81+.2*s},
-            rotationRate: {alpha: 1.2*c, beta: .8*s, gamma: .5*c}}, this.origin + t * 1000);
+          this.record({timeStamp: null, interval: 20,
+            accelerationIncludingGravity: {x: .12*s, y: .08*c, z: 9.81+.2*s}}, this.origin + t * 1000);
         }
       } else if (now - (this.lastValid ?? this.startedWall) > 3000) {
-        this.state = 'no-data'; this.message = this.validEvents ? 'IMU 数据已中断；PPG 继续采集' :
-          '未收到有效 IMU 数据；请检查运动权限或在手机 Safari / Chrome 中打开，PPG 可继续';
+        this.state = 'no-data'; this.message = this.validEvents ? '等待加速度恢复 · 会话继续，缺口如实记录' :
+          '未收到有效加速度；请检查运动权限或在手机 Safari 中打开，PPG 可继续';
+        // Only reattach after an actual absence of events, never for a stationary phone.
+        if (now - (this.lastEvent ?? this.startedWall) > 5000 && now-this.lastRestart > 10000 && this.consecutiveRestarts < 3) {
+          window.removeEventListener('devicemotion', this.listener);
+          window.addEventListener('devicemotion', this.listener);
+          this.restarts++; this.consecutiveRestarts++; this.lastRestart = now;
+        }
       }
       if (this.state === 'receiving') this.message = this.mode === 'demo' ? '合成运动信号 · 非实测' : '正在接收手机 IMU 数据';
       this.render();
@@ -87,8 +97,7 @@
     stop() {
       if (this.listener) window.removeEventListener('devicemotion', this.listener);
       this.listener = null;
-      if (this.timer) clearInterval(this.timer); this.timer = null;
-      if (this.active) { this.state = 'stopped'; this.message = 'IMU 已停止，可导出本次记录'; }
+      if (this.active) { this.state = 'stopped'; this.message = '加速度已停止，可导出本次记录'; }
       this.active = false;
     }
     stats(rows) {
@@ -102,49 +111,57 @@
     summary() {
       return {enabled: this.enabled, permission: this.permission, status: this.state, mode: this.mode,
         ...this.stats(this.rows), null_events: this.nullEvents, max_events: 120000,
+        source: 'DeviceMotionEvent.accelerationIncludingGravity', includes_gravity: true,
+        listener_restarts: this.restarts, gaps_over_250ms: this.gaps,
         fields_with_values: Object.fromEntries(MOTION_FIELDS.map(key => [key, this.rows.reduce((n, row) => n + (row[key] !== null ? 1 : 0), 0)])),
         timestamp_basis: this.mode === 'demo' ? 'Synthetic 50 Hz signal times; event_timestamp_ms is null.' :
           'time_s = (callback_performance_ms - session_origin_performance_ms) / 1000. event_timestamp_ms is the unmodified browser Event.timeStamp, not a hardware sample timestamp.',
         reported_interval_basis: 'DeviceMotionEvent.interval as provided by the browser; may differ from observed callback intervals.',
-        signal_processing: 'Browser-provided values; no application filtering or resampling. Missing axes remain null. No SCG event detection or hardware synchronization calibration.'};
+        signal_processing: 'Only three accelerationIncludingGravity axes, m/s^2. No gyroscope or fused linear acceleration fields are read or stored. No resampling or gap filling; missing axes remain null. Not hardware-synchronized.'};
     }
     render() {
       $('imu-mode').textContent = this.mode === 'demo' ? '演示 · 非实测' : this.active ? '已启用' : '未采集';
       $('imu-status').textContent = this.message;
+      let first = this.rows.length;
+      while (first && this.rows[first-1].time_s >= this.lastTime-12) first--;
+      this.history = this.rows.slice(first);
       const recent = this.history.filter(row => row.time_s >= this.lastTime - 5), stats = this.stats(recent);
+      this.displayGap = Math.max(.1, Math.min(.5, (stats.interval_mean_ms || 20)*3/1000));
       const fmt = value => value === null || !Number.isFinite(value) ? '—' : value.toFixed(1);
       $('imu-rate').textContent = fmt(stats.rate_hz); $('imu-interval').textContent = fmt(stats.interval_mean_ms);
       $('imu-jitter').textContent = fmt(stats.interval_std_ms);
       const last = this.rows[this.rows.length - 1];
       $('imu-timing').textContent = `最近 5 秒 · 最大间隔 ${fmt(stats.interval_max_ms)} ms · 浏览器报告 ${fmt(last?.reported_interval_ms)} ms · 已记录 ${this.rows.length} 条`;
-      const keys = $('imu-source').value === 'linear' ? MOTION_FIELDS.slice(0, 3) : MOTION_FIELDS.slice(3, 6);
+      const keys = MOTION_FIELDS;
       $('imu-accel-values').textContent = keys.map(key => last && last[key] !== null ? last[key].toFixed(2) : '—').join(' / ');
-      $('imu-gyro-values').textContent = MOTION_FIELDS.slice(6).map(key => last && last[key] !== null ? last[key].toFixed(2) : '—').join(' / ');
-      this.draw($('imu-accel'), keys); this.draw($('imu-gyro'), MOTION_FIELDS.slice(6));
+      if (this.visible !== false) this.draw($('imu-accel'), keys);
     }
     draw(canvas, keys) {
-      const box = canvas.getBoundingClientRect(), ratio = Math.min(window.devicePixelRatio || 1, 3);
+      const box = this.box || canvas.getBoundingClientRect(), ratio = Math.min(window.devicePixelRatio || 1, 2);
+      this.box = box;
       if (!box.width || !box.height) return;
       const w = box.width, h = box.height, pw = Math.round(w*ratio), ph = Math.round(h*ratio);
       if (canvas.width !== pw || canvas.height !== ph) { canvas.width = pw; canvas.height = ph; }
       const ctx = canvas.getContext('2d'); ctx.setTransform(ratio,0,0,ratio,0,0); ctx.clearRect(0,0,w,h);
       const end = Math.max(10, this.lastTime || 0), start = end-10;
       const rows = this.history.filter(row => row.time_s >= start && row.time_s <= end);
-      let lo = Infinity, hi = -Infinity;
-      rows.forEach(row => keys.forEach(key => { if (row[key] !== null) { lo = Math.min(lo,row[key]); hi = Math.max(hi,row[key]); } }));
-      const hasData = Number.isFinite(lo), pad = hasData ? Math.max(.02, (hi-lo)*.12) : 1;
-      lo = hasData ? lo-pad : -1; hi = hasData ? hi+pad : 1;
-      const left=45, right=w-12, top=14, bottom=h-24, y=value=>bottom-(value-lo)/(hi-lo)*(bottom-top);
-      ctx.font='10px sans-serif'; ctx.lineWidth=1; ctx.strokeStyle='#254056'; ctx.fillStyle='#9db1c3';
-      for (let i=0; i<3; i++) {
-        const value=lo+(hi-lo)*i/2, yy=y(value); ctx.beginPath(); ctx.moveTo(left,yy); ctx.lineTo(right,yy); ctx.stroke();
-        ctx.fillText(Math.abs(value)>=100 ? value.toFixed(0) : value.toFixed(2), 2, yy+3);
-      }
-      ctx.fillText(`${start.toFixed(0)} s`,left,bottom+17); ctx.fillText(`${end.toFixed(0)} s`,right-28,bottom+17);
-      if (!hasData) { ctx.fillText('暂无该通道数据',left+12,top+24); return; }
-      const mean = this.stats(rows).interval_mean_ms;
-      const gap = Math.max(.1, Math.min(.5, (mean || 20)*3/1000));
+      const left=48, right=w-12, lane=(h-24)/3;
+      ctx.font='10px sans-serif'; ctx.fillStyle='#9db1c3';
+      ctx.fillText(`${start.toFixed(0)} s`,left,h-6); ctx.fillText(`${end.toFixed(0)} s`,right-28,h-6);
+      const gap = this.displayGap;
       keys.forEach((key,index) => {
+        let lo=Infinity, hi=-Infinity;
+        rows.forEach(row=>{if(row[key]!==null){lo=Math.min(lo,row[key]);hi=Math.max(hi,row[key]);}});
+        const hasData=Number.isFinite(lo), pad=hasData ? Math.max(.005,(hi-lo)*.15) : 1;
+        lo=hasData ? lo-pad : -1; hi=hasData ? hi+pad : 1;
+        const top=index*lane+14, bottom=(index+1)*lane-10, y=value=>bottom-(value-lo)/(hi-lo)*(bottom-top);
+        ctx.lineWidth=1; ctx.strokeStyle='#254056'; ctx.fillStyle='#9db1c3';
+        ctx.fillText(['X','Y','Z'][index],2,top-2);
+        [lo,hi].forEach(value=>{
+          const yy=y(value);ctx.beginPath();ctx.moveTo(left,yy);ctx.lineTo(right,yy);ctx.stroke();
+          ctx.fillText(Math.abs(value)>=100 ? value.toFixed(0) : value.toFixed(2),2,yy+9);
+        });
+        if(!hasData){ctx.fillText('暂无该轴数据',left+12,top+22);return;}
         ctx.strokeStyle=['#83e9ca','#80baff','#f4be80'][index]; ctx.lineWidth=1.4; ctx.beginPath(); let prev=null;
         rows.forEach(row => {
           if (row[key] === null) { prev=null; return; }
@@ -163,10 +180,12 @@
       this.rows = []; this.history = []; this.frames = []; this.arrivals = [];
       this.running = false; this.starting = false; this.token = 0; this.worker = null; this.stream = null;
       this.callbackId = null; this.timer = null; this.healthTimer = null; this.wakeLock = null;
-      this.motion = new MotionCapture(() => { $('export').disabled = false; });
+      this.motion = new MotionCapture();
       this.cameraId = '';
       try { this.cameraId = window.localStorage.getItem(CAMERA_KEY) || ''; } catch (_) {}
       this.mobileCamera = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '') ||
+        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+      this.iosCamera = /iPhone|iPad|iPod/i.test(navigator.userAgent || '') ||
         (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
       $('start').addEventListener('click', () => this.running || this.starting ? this.stop('已停止 · 可下载本次数据') : this.startCamera());
       $('demo').addEventListener('click', () => this.startDemo());
@@ -175,6 +194,13 @@
       window.addEventListener('pagehide', () => this.stop('页面已离开 · 采集停止'));
       window.addEventListener('resize', () => this.resize());
       if (typeof ResizeObserver !== 'undefined') new ResizeObserver(() => this.resize()).observe(this.canvas);
+      if (typeof IntersectionObserver !== 'undefined') {
+        const observer = new IntersectionObserver(entries => entries.forEach(entry => {
+          if (entry.target === this.canvas) { this.waveVisible = entry.isIntersecting; if (entry.isIntersecting) this.paint(); }
+          else { this.motion.visible = entry.isIntersecting; if (entry.isIntersecting) this.motion.render(); }
+        }));
+        observer.observe(this.canvas); observer.observe($('imu-accel'));
+      }
       this.environment(); this.resize();
     }
     environment() {
@@ -188,23 +214,26 @@
       }
     }
     resize() {
-      const box = this.canvas.getBoundingClientRect(), ratio = Math.min(window.devicePixelRatio || 1, 3);
+      const box = this.canvas.getBoundingClientRect(), ratio = Math.min(window.devicePixelRatio || 1, 2);
       if (!box.width || !box.height) return;
       this.width = box.width; this.height = box.height;
       this.canvas.width = Math.round(box.width * ratio); this.canvas.height = Math.round(box.height * ratio);
-      this.ctx.setTransform(ratio, 0, 0, ratio, 0, 0); this.paint(); this.motion.render();
+      this.ctx.setTransform(ratio, 0, 0, ratio, 0, 0); this.motion.box = null; this.paint(); this.motion.render();
     }
-    paint() { if (this.width) PPGView.drawWave(this.ctx, this.width, this.height, this.history, this.lastTime || 0); }
+    paint() { if (this.width && this.waveVisible !== false) PPGView.drawWave(this.ctx, this.width, this.height, this.history, this.lastTime || 0); }
     setupSession(mode) {
       this.rows = []; this.frames = []; this.history = []; this.arrivals = [];
       this.lastTime = 0; this.lastTimestamp = null; this.lastFrameKey = null; this.lastUi = 0; this.lastPaint = 0;
       this.framesSeen = 0; this.framesSkipped = 0; this.presentedMissed = 0; this.busy = false; this.requestId = 0;
+      this.pendingFrames = 0; this.cameraEvents = []; this.cameraInterruptions = []; this.cameraEnded = false;
+      this.cameraMuted = false; this.cameraStalled = false; this.latestRgb = null;
       this.mode = mode; this.origin = performance.now(); this.lastFrameWall = this.origin; this.receivedFrame = false;
       this.motion.reset(mode, this.origin, !!$('imu-enabled').checked);
-      this.metadata = {version: 2, mode, started_at: new Date().toISOString(), backend: null, video_uploaded: false,
+      this.metadata = {version: 3, build: 'single-lens-accel-v3', mode, started_at: new Date().toISOString(), backend: null, video_uploaded: false,
         session_origin_performance_ms: this.origin, performance_time_origin_unix_ms: finite(performance.timeOrigin),
         synchronization: 'PPG and IMU use the same session origin on the page performance clock. Callback times are not hardware capture times; sensor/camera delay is not calibrated.',
-        requested_flash: false, requested_camera_fps: mode === 'camera' ? 60 : null, filter_fs_hz: 60,
+        requested_flash: false, requested_camera_fps: mode === 'camera' ? this.targetFps : null, filter_fs_hz: 60,
+        pixel_processing: 'Original central 60% ROI only; no downscaling. RGB averaging and primary/HR processing in worker when available.',
         roi_fraction_xyxy: [.2,.2,.8,.8], bandpass_hz: [.5,5], warmup_s: 3,
         heart_rate_window_s: 8, heart_rate_minimum_initialized_s: 5, heart_rate_update_s: 1,
         timestamp_basis: mode === 'camera' ? 'performance.now() at video frame callback; relative seconds, not hardware exposure time.' : 'Synthetic 30 Hz signal times; paced demonstration, not camera measurements.'};
@@ -214,12 +243,12 @@
       $('mode-pill').className = 'mode-pill ' + (mode === 'demo' ? 'demo' : 'live');
       this.processor = null;
       try {
-        this.worker = new Worker('worker.js');
+        this.worker = new Worker('worker.js?v=3');
         const token = this.token;
         this.worker.onmessage = event => {
           if (token !== this.token || !this.running) return;
           if (event.data.kind === 'error') { this.stop('计算失败：' + event.data.message); return; }
-          this.busy = false; this.accept(event.data);
+          this.pendingFrames = Math.max(0, this.pendingFrames-1); this.busy = this.pendingFrames >= 3; this.accept(event.data);
         };
         this.worker.onerror = () => { if (token === this.token) this.stop('计算模块加载失败，请刷新页面并检查部署文件'); };
         this.metadata.processing = 'Web Worker';
@@ -231,7 +260,17 @@
     setRunning() {
       this.running = true; this.starting = false;
       $('imu-enabled').disabled = true;
+      $('capture-fps').disabled = true;
       $('start').textContent = '停止采集'; $('start').disabled = false; $('demo').disabled = true;
+      // One display clock for both streams. Sensor callbacks only append numeric data.
+      this.uiTimer = setInterval(() => {
+        if (!this.running) return;
+        this.motion.tick();
+        if (this.latestRgb) this.updateReadout(this.latestRgb);
+        $('export').disabled = !this.hasData();
+        this.paint();
+        if (performance.now()-this.origin >= 300000) this.stop('已完成 5 分钟采集，请下载数据');
+      }, 100);
       if (navigator.wakeLock && navigator.wakeLock.request) {
         const token = this.token;
         navigator.wakeLock.request('screen').then(lock => {
@@ -244,21 +283,49 @@
       if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { this.environment(); return; }
       const token = ++this.token;
       this.starting = true; $('start').textContent = '取消启动'; $('demo').disabled = true;
-      $('imu-enabled').disabled = true;
+      $('imu-enabled').disabled = true; $('capture-fps').disabled = true;
+      this.targetFps = $('capture-fps').value === '30' ? 30 : 60;
       const motionPermission = MotionCapture.permission(!!$('imu-enabled').checked);
       $('status').textContent = '请求相机权限，请在浏览器提示中允许';
-      const selection = this.cameraId;
-      const constraints = {audio: false, video: {width: {ideal: 640}, height: {ideal: 480}, frameRate: {ideal: 60, max: 60},
+      let selection = this.cameraId;
+      const constraints = {audio: false, video: {width: {ideal: 640}, height: {ideal: 480}, frameRate: {ideal: this.targetFps, max: this.targetFps},
         ...(selection ? {deviceId: {exact: selection}} : {facingMode: this.mobileCamera ? {exact: 'environment'} : {ideal: 'environment'}})}};
       let stream;
       try {
         stream = await navigator.mediaDevices.getUserMedia(constraints);
         if (token !== this.token) { stream.getTracks().forEach(track => track.stop()); return; }
         this.stream = stream;
-        const track = stream.getVideoTracks()[0];
+        let track = stream.getVideoTracks()[0];
+        let devices = [];
+        if (navigator.mediaDevices.enumerateDevices) {
+          devices = (await navigator.mediaDevices.enumerateDevices()).filter(device => device.kind === 'videoinput');
+          if (token !== this.token) { stream.getTracks().forEach(item => item.stop()); return; }
+        }
+        // Pick an individually named lens, not an environment-facing virtual camera.
+        if (!selection && this.mobileCamera) {
+          const physical = devices.filter(device => physicalRearScore(device.label) > 0)
+            .sort((a,b) => physicalRearScore(b.label)-physicalRearScore(a.label));
+          const chosen = physical[0];
+          if (chosen && chosen.deviceId !== track.getSettings().deviceId) {
+            selection = chosen.deviceId;
+            stream.getTracks().forEach(item => item.stop()); this.stream = null;
+            stream = await navigator.mediaDevices.getUserMedia({audio:false, video:{...constraints.video,
+              facingMode: undefined, deviceId:{exact:selection}}});
+            if (token !== this.token) { stream.getTracks().forEach(item => item.stop()); return; }
+            this.stream = stream; track = stream.getVideoTracks()[0];
+          }
+        }
+        const label = track.label || devices.find(device => device.deviceId === track.getSettings().deviceId)?.label || '';
+        if (this.iosCamera && !physicalRearScore(label))
+          throw new Error('未找到可确认的独立后置镜头，已停止以避免自动换镜头。请用 Safari 打开；可见镜头：' + (devices.map(device=>device.label).join('、') || label || '未提供名称'));
         const capabilities = track.getCapabilities ? track.getCapabilities() : {};
         if (capabilities.torch) {
           try { await track.applyConstraints({advanced: [{torch: false}]}); } catch (_) {}
+        }
+        let rateConstraint = 'ideal';
+        const range = capabilities.frameRate;
+        if (range && range.min <= this.targetFps && range.max >= this.targetFps) {
+          try { await track.applyConstraints({frameRate:{exact:this.targetFps}}); rateConstraint = 'exact'; } catch (_) {}
         }
         if (token !== this.token) { stream.getTracks().forEach(item => item.stop()); return; }
         const settings = track.getSettings ? track.getSettings() : {};
@@ -276,18 +343,44 @@
         this.setupSession('camera'); this.setRunning();
         motionPermission.then(permission => { if (token === this.token && this.running) this.motion.start(permission); });
         this.metadata.camera_settings = settings;
-        this.metadata.camera_selection = 'fixed deviceId; no camera switching';
+        this.metadata.camera_selection = this.iosCamera ? 'Individually named rear lens, exact deviceId; old virtual-camera selection ignored.' : 'Prefer individually named rear lens; fixed deviceId.';
+        this.metadata.camera_label = label; this.metadata.camera_inventory = devices.map(device=>({deviceId:device.deviceId,label:device.label}));
+        this.metadata.frame_rate_constraint = rateConstraint;
         this.metadata.frame_callback = typeof this.video.requestVideoFrameCallback === 'function' ? 'requestVideoFrameCallback' : 'decoded-frame counter + requestAnimationFrame';
         $('preview-empty').hidden = true; $('roi').hidden = false; $('camera-state').textContent = '采集中';
         $('status').textContent = '等待手指覆盖摄像头';
-        track.addEventListener('ended', () => { if (token === this.token && this.running) this.stop('相机已中断，请重新开始'); });
-        track.addEventListener('mute', () => { if (token === this.token && this.running) this.stop('相机暂时不可用，请重新开始'); });
+        track.addEventListener('ended', () => {
+          if (token !== this.token || !this.running) return;
+          this.cameraEnded = true; this.cameraStalled = true;
+          this.cameraInterruptions.push({event:'ended',time_s:(performance.now()-this.origin)/1000});
+          $('camera-state').textContent = '相机已结束'; $('bpm').textContent = '—';
+          $('status').textContent = '相机已结束；加速度继续记录，可停止后导出';
+        });
+        track.addEventListener('mute', () => {
+          if (token !== this.token || !this.running) return;
+          this.cameraMuted = true;
+          this.cameraInterruptions.push({event:'mute',time_s:(performance.now()-this.origin)/1000});
+          $('camera-state').textContent = '相机暂缓 · 等待恢复';
+        });
+        track.addEventListener('unmute', () => {
+          if (token !== this.token || !this.running) return;
+          this.cameraMuted = false;
+          this.cameraInterruptions.push({event:'unmute',time_s:(performance.now()-this.origin)/1000});
+          this.video.play().catch(()=>{});
+        });
         this.scheduleCamera(token);
         this.healthTimer = setInterval(() => {
-          if (this.running && track.getSettings().deviceId !== this.cameraId) {
+          const currentId = track.getSettings().deviceId;
+          if (this.running && !this.cameraEnded && currentId && currentId !== this.cameraId) {
             this.stop('摄像头已发生变化，采集停止，请重新开始'); return;
           }
-          if (this.running && performance.now() - this.lastFrameWall > (this.receivedFrame ? 2500 : 8000)) this.stop('未收到新的相机帧，请重新开始或更换浏览器');
+          const age = performance.now()-this.lastFrameWall;
+          if (this.running && age > (this.receivedFrame ? 1500 : 8000)) {
+            this.cameraStalled = true; $('bpm').textContent = '—';
+            $('camera-state').textContent = this.cameraEnded ? '相机已结束' : '等待相机恢复';
+            $('status').textContent = '暂无新相机帧；加速度独立记录中';
+            if (age > 15000 && !this.motion.active) this.stop('相机没有恢复，已保留本次数据，请重新开始');
+          }
         }, 500);
       } catch (error) {
         if (stream) stream.getTracks().forEach(track => track.stop());
@@ -301,10 +394,10 @@
       }
     }
     scheduleCamera(token) {
-      if (!this.running || token !== this.token) return;
+      if (!this.running || token !== this.token || this.cameraEnded) return;
       const callback = (now, metadata) => {
         this.callbackId = null;
-        if (!this.running || token !== this.token) return;
+        if (!this.running || token !== this.token || this.cameraEnded) return;
         try {
           this.cameraFrame(metadata);
           this.scheduleCamera(token);
@@ -329,27 +422,39 @@
       if (this.lastFrameKey !== null && key > this.lastFrameKey + 1) this.presentedMissed += key - this.lastFrameKey - 1;
       this.lastFrameKey = key; this.framesSeen++;
       const now = performance.now(), t = (now - this.origin) / 1000;
-      this.receivedFrame = true; this.lastFrameWall = now;
+      this.receivedFrame = true; this.lastFrameWall = now; this.cameraStalled = false; this.cameraMuted = false;
+      const frameEvent = {time_s:t, callback_performance_ms:now, media_time_s:metadata ? metadata.mediaTime : this.video.currentTime,
+        presented_frames:key, application_skipped:this.busy};
+      this.cameraEvents.push(frameEvent);
       if (this.busy) { this.framesSkipped++; return; }
       const w = this.video.videoWidth, h = this.video.videoHeight;
-      if (this.imageCanvas.width !== w || this.imageCanvas.height !== h) {
-        this.imageCanvas.width = w; this.imageCanvas.height = h;
+      const x0 = Math.round(.2*w), y0 = Math.round(.2*h), rw = Math.round(.8*w)-x0, rh = Math.round(.8*h)-y0;
+      if (this.imageCanvas.width !== rw || this.imageCanvas.height !== rh) {
+        this.imageCanvas.width = rw; this.imageCanvas.height = rh;
         $('preview-box').style.aspectRatio = `${w} / ${h}`;
         // Match preview and source aspect ratio, including portrait camera streams.
         $('preview-box').style.maxHeight = 'none';
       }
-      this.imageContext.drawImage(this.video, 0, 0, w, h);
-      const pixels = this.imageContext.getImageData(0, 0, w, h).data;
-      const rgb = PPGView.rgbMean(pixels, w, h);
-      this.submit(t, rgb, {media_time_s: metadata ? metadata.mediaTime : this.video.currentTime,
-        presented_frames: key, width: w, height: h, callback_performance_ms: now});
+      const captureStart = performance.now();
+      this.imageContext.drawImage(this.video, x0, y0, rw, rh, 0, 0, rw, rh);
+      const pixels = this.imageContext.getImageData(0, 0, rw, rh).data;
+      this.submit(t, null, {...frameEvent, width:w, height:h, roi_width:rw, roi_height:rh,
+        capture_readback_ms:performance.now()-captureStart}, pixels);
     }
-    submit(t, rgb, frame = {}) {
+    submit(t, rgb, frame = {}, pixels = null) {
       if (!this.running || (this.lastTimestamp !== null && t <= this.lastTimestamp)) return;
       this.lastTimestamp = t;
-      const input = {id: ++this.requestId, t, rgb, frame};
-      if (this.worker) { this.busy = true; this.worker.postMessage(input); }
+      const input = {id: ++this.requestId, t, rgb, frame, pixels};
+      if (this.worker) {
+        this.pendingFrames++; this.busy = this.pendingFrames >= 3;
+        this.worker.postMessage(input, pixels ? [pixels.buffer] : []);
+      }
       else {
+        if (pixels) {
+          rgb = [0,0,0];
+          for (let i=0;i<pixels.length;i+=4) { rgb[0]+=pixels[i]; rgb[1]+=pixels[i+1]; rgb[2]+=pixels[i+2]; }
+          rgb = rgb.map(value=>value/(pixels.length/4)); input.rgb = rgb;
+        }
         const start = performance.now(), rows = this.processor.feed(t, rgb[0], rgb[1]);
         this.accept({...input, rows, processing_ms: performance.now() - start});
       }
@@ -357,23 +462,30 @@
     accept(result) {
       const {t, rgb, frame, rows} = result;
       this.rows.push(...rows); this.history.push(...rows); this.lastTime = t;
+      this.latestRgb = rgb;
       this.frames.push({time_s: t, red: rgb[0], green: rgb[1], blue: rgb[2],
         callback_performance_ms: frame.callback_performance_ms ?? null,
         media_time_s: frame.media_time_s ?? null, presented_frames: frame.presented_frames ?? null,
+        roi_width:frame.roi_width ?? null, roi_height:frame.roi_height ?? null, capture_readback_ms:frame.capture_readback_ms ?? null,
         width: frame.width ?? null, height: frame.height ?? null, processing_ms: result.processing_ms});
       this.arrivals.push(t); if (this.arrivals.length > 120) this.arrivals.shift();
       while (this.history.length && this.history[0].time_s < t - 12) this.history.shift();
       const now = performance.now();
-      if (now - this.lastPaint >= 40) { this.paint(); this.lastPaint = now; }
       if (now - this.lastUi >= 200) { this.updateReadout(rgb); this.lastUi = now; }
       if (t >= 300) this.stop('已完成 5 分钟采集，请下载数据');
     }
     updateReadout(rgb) {
-      const row = this.rows[this.rows.length - 1], n = this.arrivals.length;
-      const rate = n > 1 ? (n - 1) / (this.arrivals[n - 1] - this.arrivals[0]) : 0;
-      $('bpm').textContent = row && row.heart_rate_bpm !== null ? row.heart_rate_bpm.toFixed(0) : '—';
-      $('status').textContent = PPGView.statusText(row);
-      $('fps').textContent = rate.toFixed(1); $('elapsed').textContent = this.lastTime.toFixed(1);
+      const row = this.rows[this.rows.length - 1], clockTime = (performance.now()-this.origin)/1000;
+      let first = this.cameraEvents.length;
+      while (first && this.cameraEvents[first-1].time_s >= clockTime-5) first--;
+      const times = this.mode === 'camera' ? this.cameraEvents.slice(first).map(event=>event.time_s) : this.arrivals;
+      const n = times.length, rate = n > 1 ? (n-1)/(times[n-1]-times[0]) : 0;
+      $('bpm').textContent = !this.cameraStalled && !this.cameraMuted && row && row.heart_rate_bpm !== null ? row.heart_rate_bpm.toFixed(0) : '—';
+      if (!this.cameraStalled && !this.cameraMuted) {
+        $('status').textContent = PPGView.statusText(row);
+        if (this.mode === 'camera') $('camera-state').textContent = '采集中';
+      }
+      $('fps').textContent = rate.toFixed(1); $('elapsed').textContent = (this.mode === 'camera' ? clockTime : this.lastTime).toFixed(1);
       $('red').textContent = rgb[0].toFixed(1); $('export').disabled = !this.hasData();
       $('export-note').textContent = this.mode === 'demo' ? '演示数据，文件名带 DEMO 标记。' : '数据保存在当前页面，请在关闭前下载。';
     }
@@ -395,7 +507,8 @@
     }
     stop(message = '已停止') {
       this.running = false; this.starting = false; ++this.token;
-      this.motion.stop(); this.motion.render(); $('imu-enabled').disabled = false;
+      this.motion.stop(); this.motion.render(); $('imu-enabled').disabled = false; $('capture-fps').disabled = false;
+      if (this.uiTimer) clearInterval(this.uiTimer); this.uiTimer = null;
       if (this.callbackId !== null) {
         if (this.callbackType === 'video' && this.video.cancelVideoFrameCallback) this.video.cancelVideoFrameCallback(this.callbackId);
         else cancelAnimationFrame(this.callbackId);
@@ -404,7 +517,7 @@
       if (this.timer) clearInterval(this.timer); this.timer = null;
       if (this.healthTimer) clearInterval(this.healthTimer); this.healthTimer = null;
       if (this.worker) this.worker.terminate(); this.worker = null;
-      if (this.busy) this.framesSkipped++; this.busy = false;
+      this.framesSkipped += this.pendingFrames || 0; this.pendingFrames = 0; this.busy = false;
       if (this.stream) this.stream.getTracks().forEach(track => track.stop()); this.stream = null;
       this.video.pause(); this.video.srcObject = null;
       if (this.wakeLock) this.wakeLock.release().catch(() => {}); this.wakeLock = null;
@@ -424,10 +537,11 @@
       const type = $('export-type').value;
       let content, extension, mime;
       const metadata = {...this.metadata, exported_at: new Date().toISOString(), imu: this.motion.summary(),
+          camera_interruptions: this.cameraInterruptions,
           frames_received: this.framesSeen, processed_frames: this.frames.length, application_skipped_frames: this.framesSkipped,
           missed_presented_frames: this.presentedMissed, waveform_rows: this.rows.length};
       if (type === 'metadata' || type === 'session') {
-        content = JSON.stringify(type === 'session' ? {metadata, waveform: this.rows, frames: this.frames, imu: this.motion.rows} : metadata, null, 2);
+        content = JSON.stringify(type === 'session' ? {metadata, waveform: this.rows, frames: this.frames, camera_events: this.cameraEvents, imu: this.motion.rows} : metadata, null, 2);
         extension = '.json'; mime = 'application/json';
         if (type === 'session') extension = '_session.json';
       } else if (type === 'imu') {
