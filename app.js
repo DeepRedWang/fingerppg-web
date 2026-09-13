@@ -3,6 +3,158 @@
   'use strict';
   const $ = id => document.getElementById(id);
   const CAMERA_KEY = 'fingerppg.default-camera.v1';
+  const MOTION_FIELDS = ['ax_m_s2', 'ay_m_s2', 'az_m_s2', 'gx_m_s2', 'gy_m_s2', 'gz_m_s2',
+    'alpha_deg_s', 'beta_deg_s', 'gamma_deg_s'];
+  const finite = value => Number.isFinite(value) ? value : null;
+  class MotionCapture {
+    constructor(onData) {
+      this.onData = onData; this.rows = []; this.history = []; this.active = false;
+      this.state = 'idle'; this.message = '点击开始后申请运动权限，与 PPG 一起记录。';
+      $('imu-source').addEventListener('change', () => this.render());
+    }
+    static permission(enabled) {
+      if (!enabled) return Promise.resolve('disabled');
+      if (!window.isSecureContext) return Promise.resolve('insecure');
+      if (typeof window.DeviceMotionEvent === 'undefined') return Promise.resolve('unsupported');
+      try {
+        // Called synchronously by the Start click, before awaiting camera access.
+        if (typeof window.DeviceMotionEvent.requestPermission === 'function')
+          return Promise.resolve(window.DeviceMotionEvent.requestPermission()).then(
+            result => result === 'granted' ? 'granted' : 'denied', () => 'denied');
+        return Promise.resolve('not-required');
+      } catch (_) { return Promise.resolve('denied'); }
+    }
+    reset(mode, origin, enabled) {
+      this.stop(); this.rows = []; this.history = []; this.mode = mode; this.origin = origin;
+      this.enabled = enabled; this.permission = enabled ? 'pending' : 'disabled';
+      this.nullEvents = 0; this.validEvents = 0; this.lastValid = null; this.lastTime = 0;
+      this.state = enabled ? 'waiting' : 'disabled';
+      this.message = enabled ? '等待运动权限与传感器数据…' : '本次未启用 IMU';
+      this.render();
+    }
+    start(permission) {
+      this.permission = permission;
+      const failures = {disabled: '本次未启用 IMU', insecure: 'IMU 需要 HTTPS 安全连接',
+        unsupported: '此浏览器不支持运动传感器，PPG 可继续采集',
+        denied: '未获得运动权限，PPG 可继续采集；请检查网站权限后重新开始'};
+      if (failures[permission]) { this.state = permission; this.message = failures[permission]; this.render(); return; }
+      this.active = true; this.state = 'waiting'; this.startedWall = performance.now();
+      this.message = this.mode === 'demo' ? '合成运动信号 · 未访问手机 IMU' : '等待手机运动数据…';
+      if (this.mode !== 'demo') {
+        this.listener = event => this.record(event, performance.now());
+        window.addEventListener('devicemotion', this.listener);
+      }
+      this.timer = setInterval(() => this.tick(), 100);
+      this.render();
+    }
+    record(event, now) {
+      if (!this.active) return;
+      const row = {time_s: (now - this.origin) / 1000, callback_performance_ms: now,
+        event_timestamp_ms: finite(event.timeStamp), reported_interval_ms: finite(event.interval),
+        ax_m_s2: finite(event.acceleration?.x), ay_m_s2: finite(event.acceleration?.y), az_m_s2: finite(event.acceleration?.z),
+        gx_m_s2: finite(event.accelerationIncludingGravity?.x), gy_m_s2: finite(event.accelerationIncludingGravity?.y), gz_m_s2: finite(event.accelerationIncludingGravity?.z),
+        alpha_deg_s: finite(event.rotationRate?.alpha), beta_deg_s: finite(event.rotationRate?.beta), gamma_deg_s: finite(event.rotationRate?.gamma)};
+      row.has_sensor_value = MOTION_FIELDS.some(key => row[key] !== null);
+      this.rows.push(row); this.history.push(row); this.lastTime = row.time_s;
+      if (row.has_sensor_value) { this.validEvents++; this.lastValid = now; this.state = 'receiving'; }
+      else this.nullEvents++;
+      while (this.history.length && this.history[0].time_s < row.time_s - 12) this.history.shift();
+      // Bound memory even if a device emits unusually fast motion events.
+      if (this.rows.length >= 120000) {
+        this.stop(); this.state = 'limit'; this.message = 'IMU 已达 120,000 条上限并停止；PPG 继续，可导出数据'; this.render();
+      }
+      if (this.onData) this.onData();
+    }
+    tick() {
+      if (!this.active) return;
+      const now = performance.now(); this.lastTime = (now - this.origin) / 1000;
+      if (this.mode === 'demo') {
+        // 50 Hz synthetic timestamps, independent of browser timer jitter.
+        const end = Math.min(this.lastTime, 300);
+        while (this.active && this.demoIndex / 50 <= end) {
+          const t = this.demoIndex++ / 50, s = Math.sin(2 * Math.PI * 1.2 * t), c = Math.cos(2 * Math.PI * 1.2 * t);
+          this.record({timeStamp: null, interval: 20, acceleration: {x: .12*s, y: .08*c, z: .2*s},
+            accelerationIncludingGravity: {x: .12*s, y: .08*c, z: 9.81+.2*s},
+            rotationRate: {alpha: 1.2*c, beta: .8*s, gamma: .5*c}}, this.origin + t * 1000);
+        }
+      } else if (now - (this.lastValid ?? this.startedWall) > 3000) {
+        this.state = 'no-data'; this.message = this.validEvents ? 'IMU 数据已中断；PPG 继续采集' :
+          '未收到有效 IMU 数据；请检查运动权限或在手机 Safari / Chrome 中打开，PPG 可继续';
+      }
+      if (this.state === 'receiving') this.message = this.mode === 'demo' ? '合成运动信号 · 非实测' : '正在接收手机 IMU 数据';
+      this.render();
+    }
+    stop() {
+      if (this.listener) window.removeEventListener('devicemotion', this.listener);
+      this.listener = null;
+      if (this.timer) clearInterval(this.timer); this.timer = null;
+      if (this.active) { this.state = 'stopped'; this.message = 'IMU 已停止，可导出本次记录'; }
+      this.active = false;
+    }
+    stats(rows) {
+      const valid = rows.filter(row => row.has_sensor_value);
+      const deltas = valid.slice(1).map((row, i) => row.callback_performance_ms - valid[i].callback_performance_ms);
+      const n = deltas.length, mean = n ? deltas.reduce((sum, value) => sum + value, 0) / n : null;
+      return {events: rows.length, valid_events: valid.length, rate_hz: mean > 0 ? 1000 / mean : null,
+        interval_mean_ms: mean, interval_std_ms: n ? Math.sqrt(deltas.reduce((sum, value) => sum + (value-mean)**2, 0) / n) : null,
+        interval_max_ms: n ? deltas.reduce((max, value) => Math.max(max, value), 0) : null};
+    }
+    summary() {
+      return {enabled: this.enabled, permission: this.permission, status: this.state, mode: this.mode,
+        ...this.stats(this.rows), null_events: this.nullEvents, max_events: 120000,
+        fields_with_values: Object.fromEntries(MOTION_FIELDS.map(key => [key, this.rows.reduce((n, row) => n + (row[key] !== null ? 1 : 0), 0)])),
+        timestamp_basis: this.mode === 'demo' ? 'Synthetic 50 Hz signal times; event_timestamp_ms is null.' :
+          'time_s = (callback_performance_ms - session_origin_performance_ms) / 1000. event_timestamp_ms is the unmodified browser Event.timeStamp, not a hardware sample timestamp.',
+        reported_interval_basis: 'DeviceMotionEvent.interval as provided by the browser; may differ from observed callback intervals.',
+        signal_processing: 'Browser-provided values; no application filtering or resampling. Missing axes remain null. No SCG event detection or hardware synchronization calibration.'};
+    }
+    render() {
+      $('imu-mode').textContent = this.mode === 'demo' ? '演示 · 非实测' : this.active ? '已启用' : '未采集';
+      $('imu-status').textContent = this.message;
+      const recent = this.history.filter(row => row.time_s >= this.lastTime - 5), stats = this.stats(recent);
+      const fmt = value => value === null || !Number.isFinite(value) ? '—' : value.toFixed(1);
+      $('imu-rate').textContent = fmt(stats.rate_hz); $('imu-interval').textContent = fmt(stats.interval_mean_ms);
+      $('imu-jitter').textContent = fmt(stats.interval_std_ms);
+      const last = this.rows[this.rows.length - 1];
+      $('imu-timing').textContent = `最近 5 秒 · 最大间隔 ${fmt(stats.interval_max_ms)} ms · 浏览器报告 ${fmt(last?.reported_interval_ms)} ms · 已记录 ${this.rows.length} 条`;
+      const keys = $('imu-source').value === 'linear' ? MOTION_FIELDS.slice(0, 3) : MOTION_FIELDS.slice(3, 6);
+      $('imu-accel-values').textContent = keys.map(key => last && last[key] !== null ? last[key].toFixed(2) : '—').join(' / ');
+      $('imu-gyro-values').textContent = MOTION_FIELDS.slice(6).map(key => last && last[key] !== null ? last[key].toFixed(2) : '—').join(' / ');
+      this.draw($('imu-accel'), keys); this.draw($('imu-gyro'), MOTION_FIELDS.slice(6));
+    }
+    draw(canvas, keys) {
+      const box = canvas.getBoundingClientRect(), ratio = Math.min(window.devicePixelRatio || 1, 3);
+      if (!box.width || !box.height) return;
+      const w = box.width, h = box.height, pw = Math.round(w*ratio), ph = Math.round(h*ratio);
+      if (canvas.width !== pw || canvas.height !== ph) { canvas.width = pw; canvas.height = ph; }
+      const ctx = canvas.getContext('2d'); ctx.setTransform(ratio,0,0,ratio,0,0); ctx.clearRect(0,0,w,h);
+      const end = Math.max(10, this.lastTime || 0), start = end-10;
+      const rows = this.history.filter(row => row.time_s >= start && row.time_s <= end);
+      let lo = Infinity, hi = -Infinity;
+      rows.forEach(row => keys.forEach(key => { if (row[key] !== null) { lo = Math.min(lo,row[key]); hi = Math.max(hi,row[key]); } }));
+      const hasData = Number.isFinite(lo), pad = hasData ? Math.max(.02, (hi-lo)*.12) : 1;
+      lo = hasData ? lo-pad : -1; hi = hasData ? hi+pad : 1;
+      const left=45, right=w-12, top=14, bottom=h-24, y=value=>bottom-(value-lo)/(hi-lo)*(bottom-top);
+      ctx.font='10px sans-serif'; ctx.lineWidth=1; ctx.strokeStyle='#254056'; ctx.fillStyle='#9db1c3';
+      for (let i=0; i<3; i++) {
+        const value=lo+(hi-lo)*i/2, yy=y(value); ctx.beginPath(); ctx.moveTo(left,yy); ctx.lineTo(right,yy); ctx.stroke();
+        ctx.fillText(Math.abs(value)>=100 ? value.toFixed(0) : value.toFixed(2), 2, yy+3);
+      }
+      ctx.fillText(`${start.toFixed(0)} s`,left,bottom+17); ctx.fillText(`${end.toFixed(0)} s`,right-28,bottom+17);
+      if (!hasData) { ctx.fillText('暂无该通道数据',left+12,top+24); return; }
+      const mean = this.stats(rows).interval_mean_ms;
+      const gap = Math.max(.1, Math.min(.5, (mean || 20)*3/1000));
+      keys.forEach((key,index) => {
+        ctx.strokeStyle=['#83e9ca','#80baff','#f4be80'][index]; ctx.lineWidth=1.4; ctx.beginPath(); let prev=null;
+        rows.forEach(row => {
+          if (row[key] === null) { prev=null; return; }
+          const xx=left+(row.time_s-start)/10*(right-left), yy=y(row[key]);
+          if (prev === null || row.time_s-prev > gap) ctx.moveTo(xx,yy); else ctx.lineTo(xx,yy);
+          prev=row.time_s;
+        }); ctx.stroke();
+      });
+    }
+  }
   class WebPPG {
     constructor() {
       this.video = $('video'); this.canvas = $('wave'); this.ctx = this.canvas.getContext('2d');
@@ -11,6 +163,7 @@
       this.rows = []; this.history = []; this.frames = []; this.arrivals = [];
       this.running = false; this.starting = false; this.token = 0; this.worker = null; this.stream = null;
       this.callbackId = null; this.timer = null; this.healthTimer = null; this.wakeLock = null;
+      this.motion = new MotionCapture(() => { $('export').disabled = false; });
       this.cameraId = '';
       try { this.cameraId = window.localStorage.getItem(CAMERA_KEY) || ''; } catch (_) {}
       this.mobileCamera = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '') ||
@@ -39,7 +192,7 @@
       if (!box.width || !box.height) return;
       this.width = box.width; this.height = box.height;
       this.canvas.width = Math.round(box.width * ratio); this.canvas.height = Math.round(box.height * ratio);
-      this.ctx.setTransform(ratio, 0, 0, ratio, 0, 0); this.paint();
+      this.ctx.setTransform(ratio, 0, 0, ratio, 0, 0); this.paint(); this.motion.render();
     }
     paint() { if (this.width) PPGView.drawWave(this.ctx, this.width, this.height, this.history, this.lastTime || 0); }
     setupSession(mode) {
@@ -47,7 +200,10 @@
       this.lastTime = 0; this.lastTimestamp = null; this.lastFrameKey = null; this.lastUi = 0; this.lastPaint = 0;
       this.framesSeen = 0; this.framesSkipped = 0; this.presentedMissed = 0; this.busy = false; this.requestId = 0;
       this.mode = mode; this.origin = performance.now(); this.lastFrameWall = this.origin; this.receivedFrame = false;
-      this.metadata = {version: 1, mode, started_at: new Date().toISOString(), backend: null, video_uploaded: false,
+      this.motion.reset(mode, this.origin, !!$('imu-enabled').checked);
+      this.metadata = {version: 2, mode, started_at: new Date().toISOString(), backend: null, video_uploaded: false,
+        session_origin_performance_ms: this.origin, performance_time_origin_unix_ms: finite(performance.timeOrigin),
+        synchronization: 'PPG and IMU use the same session origin on the page performance clock. Callback times are not hardware capture times; sensor/camera delay is not calibrated.',
         requested_flash: false, requested_camera_fps: mode === 'camera' ? 60 : null, filter_fs_hz: 60,
         roi_fraction_xyxy: [.2,.2,.8,.8], bandpass_hz: [.5,5], warmup_s: 3,
         heart_rate_window_s: 8, heart_rate_minimum_initialized_s: 5, heart_rate_update_s: 1,
@@ -74,6 +230,7 @@
     }
     setRunning() {
       this.running = true; this.starting = false;
+      $('imu-enabled').disabled = true;
       $('start').textContent = '停止采集'; $('start').disabled = false; $('demo').disabled = true;
       if (navigator.wakeLock && navigator.wakeLock.request) {
         const token = this.token;
@@ -87,6 +244,8 @@
       if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { this.environment(); return; }
       const token = ++this.token;
       this.starting = true; $('start').textContent = '取消启动'; $('demo').disabled = true;
+      $('imu-enabled').disabled = true;
+      const motionPermission = MotionCapture.permission(!!$('imu-enabled').checked);
       $('status').textContent = '请求相机权限，请在浏览器提示中允许';
       const selection = this.cameraId;
       const constraints = {audio: false, video: {width: {ideal: 640}, height: {ideal: 480}, frameRate: {ideal: 60, max: 60},
@@ -115,6 +274,7 @@
         try { window.localStorage.setItem(CAMERA_KEY, this.cameraId); } catch (_) {}
         $('camera-name').textContent = track.label || (this.mobileCamera ? '默认后置摄像头' : '系统默认摄像头');
         this.setupSession('camera'); this.setRunning();
+        motionPermission.then(permission => { if (token === this.token && this.running) this.motion.start(permission); });
         this.metadata.camera_settings = settings;
         this.metadata.camera_selection = 'fixed deviceId; no camera switching';
         this.metadata.frame_callback = typeof this.video.requestVideoFrameCallback === 'function' ? 'requestVideoFrameCallback' : 'decoded-frame counter + requestAnimationFrame';
@@ -182,7 +342,7 @@
       const pixels = this.imageContext.getImageData(0, 0, w, h).data;
       const rgb = PPGView.rgbMean(pixels, w, h);
       this.submit(t, rgb, {media_time_s: metadata ? metadata.mediaTime : this.video.currentTime,
-        presented_frames: key, width: w, height: h});
+        presented_frames: key, width: w, height: h, callback_performance_ms: now});
     }
     submit(t, rgb, frame = {}) {
       if (!this.running || (this.lastTimestamp !== null && t <= this.lastTimestamp)) return;
@@ -198,6 +358,7 @@
       const {t, rgb, frame, rows} = result;
       this.rows.push(...rows); this.history.push(...rows); this.lastTime = t;
       this.frames.push({time_s: t, red: rgb[0], green: rgb[1], blue: rgb[2],
+        callback_performance_ms: frame.callback_performance_ms ?? null,
         media_time_s: frame.media_time_s ?? null, presented_frames: frame.presented_frames ?? null,
         width: frame.width ?? null, height: frame.height ?? null, processing_ms: result.processing_ms});
       this.arrivals.push(t); if (this.arrivals.length > 120) this.arrivals.shift();
@@ -213,12 +374,13 @@
       $('bpm').textContent = row && row.heart_rate_bpm !== null ? row.heart_rate_bpm.toFixed(0) : '—';
       $('status').textContent = PPGView.statusText(row);
       $('fps').textContent = rate.toFixed(1); $('elapsed').textContent = this.lastTime.toFixed(1);
-      $('red').textContent = rgb[0].toFixed(1); $('export').disabled = this.rows.length === 0;
+      $('red').textContent = rgb[0].toFixed(1); $('export').disabled = !this.hasData();
       $('export-note').textContent = this.mode === 'demo' ? '演示数据，文件名带 DEMO 标记。' : '数据保存在当前页面，请在关闭前下载。';
     }
     startDemo() {
       if (this.running || this.starting) return;
       ++this.token; this.setupSession('demo'); this.setRunning();
+      this.motion.demoIndex = 0; this.motion.start(this.motion.enabled ? 'synthetic' : 'disabled');
       $('status').textContent = '演示数据 · 估计中'; $('camera-state').textContent = '演示模式';
       $('preview-empty').hidden = false; $('preview-empty').lastElementChild.textContent = '演示模式未使用摄像头';
       let index = 0;
@@ -233,6 +395,7 @@
     }
     stop(message = '已停止') {
       this.running = false; this.starting = false; ++this.token;
+      this.motion.stop(); this.motion.render(); $('imu-enabled').disabled = false;
       if (this.callbackId !== null) {
         if (this.callbackType === 'video' && this.video.cancelVideoFrameCallback) this.video.cancelVideoFrameCallback(this.callbackId);
         else cancelAnimationFrame(this.callbackId);
@@ -252,18 +415,25 @@
       $('preview-empty').lastElementChild.textContent = '开始后显示相机预览';
       $('mode-pill').textContent = this.mode === 'demo' ? '演示 · 已停止' : '已停止';
       $('mode-pill').className = 'mode-pill' + (this.mode === 'demo' ? ' demo' : '');
-      $('export').disabled = this.rows.length === 0; this.paint(); this.environment();
+      $('export').disabled = !this.hasData(); this.paint(); this.environment();
     }
+    hasData() { return this.rows.length > 0 || this.frames.length > 0 || this.motion.rows.length > 0; }
     exportData() {
-      if (!this.rows.length) return;
+      if (!this.hasData()) return;
       if (this.running || this.starting) this.stop('已停止 · 正在导出本次数据');
       const type = $('export-type').value;
       let content, extension, mime;
-      if (type === 'metadata') {
-        content = JSON.stringify({...this.metadata, exported_at: new Date().toISOString(),
+      const metadata = {...this.metadata, exported_at: new Date().toISOString(), imu: this.motion.summary(),
           frames_received: this.framesSeen, processed_frames: this.frames.length, application_skipped_frames: this.framesSkipped,
-          missed_presented_frames: this.presentedMissed, waveform_rows: this.rows.length}, null, 2);
+          missed_presented_frames: this.presentedMissed, waveform_rows: this.rows.length};
+      if (type === 'metadata' || type === 'session') {
+        content = JSON.stringify(type === 'session' ? {metadata, waveform: this.rows, frames: this.frames, imu: this.motion.rows} : metadata, null, 2);
         extension = '.json'; mime = 'application/json';
+        if (type === 'session') extension = '_session.json';
+      } else if (type === 'imu') {
+        const keys = ['time_s','callback_performance_ms','event_timestamp_ms','reported_interval_ms',...MOTION_FIELDS,'has_sensor_value'];
+        content = keys.join(',') + '\n' + this.motion.rows.map(row => keys.map(key => row[key] ?? '').join(',')).join('\n') + '\n';
+        extension = '_imu.csv'; mime = 'text/csv;charset=utf-8';
       } else {
         content = PPGView.csv(type === 'frames' ? this.frames : this.rows);
         extension = type === 'frames' ? '_frames.csv' : '.csv'; mime = 'text/csv;charset=utf-8';

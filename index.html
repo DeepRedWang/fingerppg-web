@@ -30,7 +30,22 @@
             <div class="stats"><div><span>实际到帧率</span><strong id="fps">—</strong><small>Hz</small></div><div><span>采集时长</span><strong id="elapsed">0.0</strong><small>s</small></div><div><span>红通道均值</span><strong id="red">—</strong></div></div>
           </section>
           <div class="capture-actions"><button id="start" class="primary" type="button">开始采集</button><button id="demo" class="secondary" type="button">体验 72 bpm 演示</button></div>
-          <p class="action-note" id="action-note">仅在点击开始后申请摄像头权限。演示模式不会打开相机。</p>
+          <p class="action-note" id="action-note">开始时申请相机与运动权限，可在下方关闭 IMU。演示不会访问相机或传感器。</p>
+          <section class="card imu-card" aria-labelledby="imu-heading">
+            <div class="card-heading"><h2 id="imu-heading">IMU 运动信号</h2><span id="imu-mode">等待采集</span></div>
+            <label class="imu-switch"><input id="imu-enabled" type="checkbox" checked> 同时采集手机 IMU</label>
+            <p id="imu-status" class="caption" role="status">点击开始后申请运动权限，与 PPG 一起记录。</p>
+            <div class="stats imu-stats"><div><span>实际有效事件率</span><strong id="imu-rate">—</strong><small>Hz</small></div><div><span>平均间隔</span><strong id="imu-interval">—</strong><small>ms</small></div><div><span>间隔标准差</span><strong id="imu-jitter">—</strong><small>ms</small></div></div>
+            <p id="imu-timing" class="caption">最近 5 秒的回调间隔；硬件采样率尚未测定。</p>
+            <label class="field-label" for="imu-source">加速度显示 · m/s²</label>
+            <select id="imu-source"><option value="gravity">含重力加速度</option><option value="linear">去重力加速度（浏览器提供）</option></select>
+            <div class="imu-legend"><span>X <i></i></span><span>Y <i></i></span><span>Z <i></i></span><span id="imu-accel-values">—</span></div>
+            <canvas id="imu-accel" class="imu-wave" aria-label="最近十秒的三轴加速度"></canvas>
+            <div class="imu-plot-heading"><h3>角速度 · °/s</h3><span>α 绕 Z · β 绕 X · γ 绕 Y</span></div>
+            <div class="imu-legend"><span>α <i></i></span><span>β <i></i></span><span>γ <i></i></span><span id="imu-gyro-values">—</span></div>
+            <canvas id="imu-gyro" class="imu-wave" aria-label="最近十秒的三轴角速度"></canvas>
+            <p class="caption">原始数值显示，纵轴自动缩放。PPG 与 IMU 使用同一页面时钟，尚未校准硬件延迟；这里显示的运动信号尚未识别为 SCG。</p>
+          </section>
         </div>
         <aside class="side-column">
           <section class="card camera-card">
@@ -43,8 +58,8 @@
             <div class="camera-lock"><span>默认摄像头 · 已锁定</span><strong id="camera-name">手机使用后置摄像头</strong></div>
             <p class="caption">采集中央区域的红通道。光照不足或波形不稳定时，心率会暂时留空。</p>
           </section>
-          <section class="card export-card"><h2>保存本次数据</h2><p class="caption">视频不上传。波形、心率和原始 RGB 均值可以单独下载。</p>
-            <label class="field-label" for="export-type">导出内容</label><select id="export-type"><option value="waveform">波形与心率 CSV</option><option value="frames">原始 RGB 与时间戳 CSV</option><option value="metadata">采集参数 JSON</option></select>
+          <section class="card export-card"><h2>保存本次数据</h2><p class="caption">数据保存在当前页面。完整 JSON 包含 PPG、RGB、IMU 与时间戳。</p>
+            <label class="field-label" for="export-type">导出内容</label><select id="export-type"><option value="session">完整会话 PPG + IMU JSON</option><option value="waveform">波形与心率 CSV</option><option value="frames">原始 RGB 与时间戳 CSV</option><option value="imu">原始 IMU 与时间戳 CSV</option><option value="metadata">采集参数 JSON</option></select>
             <button id="export" class="secondary" type="button" disabled>下载数据</button><p id="export-note" class="caption">采集后即可导出。</p>
           </section>
         </aside>
@@ -52,6 +67,8 @@
       <details class="help"><summary>使用提示与测量说明</summary><div class="help-body">
         <p>首次使用允许浏览器访问摄像头。手机固定使用默认后置摄像头，电脑使用系统默认摄像头。页面会记住首次成功开启的摄像头，停止、重新开始或刷新后继续使用同一设备，不提供切换入口。请确认手指覆盖了正在使用的镜头，并保持足够、稳定的环境光。</p>
         <p>首次心率需要 3 秒滤波初始化和至少 5 秒有效波形。实际到帧率取决于手机与浏览器；重采样到 60 Hz 不会提高摄像头实际采样率。</p>
+        <p>勾选「同时采集手机 IMU」后，开始时允许「运动与方向」权限。未授权或设备不支持时仍可采集 PPG。演示中的 PPG 和 IMU 都是合成数据，不会访问传感器。加速度和角速度有各自的单位，缺失字段留空；数据中保留含重力和去重力两种加速度。IMU 的实际事件率取最近 5 秒包含任意有效传感器值的回调，不能代表每个轴的硬件采样率。</p>
+        <p>完整会话 JSON 一次下载全部数据；IMU CSV 保留每次事件的原始字段、浏览器事件时间戳、回调时间与报告间隔。两路 time_s 以会话开始为零点，不做强制插值配对。浏览器可能降低精度，当前未从 IMU 提取心脏事件，也不输出 PTT 或血压。</p>
         <p>切换到后台或锁屏会停止采集。单次最多 5 分钟。重新开始会建立新会话，刷新或关闭页面会丢失尚未下载的数据，请先导出需要保留的结果。</p>
         <p>手机请通过 HTTPS 地址访问本页；电脑本机可以使用 localhost。若微信内置浏览器无法采集，请在 Safari 或 Chrome 中打开同一地址。</p>
         <p>心率为算法估计，尚未进行参考心率验证。时间戳记录浏览器帧回调时刻，不是硬件曝光时间。</p>
