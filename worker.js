@@ -1,6 +1,7 @@
 'use strict';
-importScripts('ppg-core.js');
+importScripts('ppg-core.js?v=5');
 const processor = new FingerPPG.PrimaryStream();
+const hrvTracker = new FingerPPG.HRVTracker();
 self.onmessage = event => {
   const {id, t, frame, pixels} = event.data;
   let {rgb} = event.data;
@@ -12,6 +13,7 @@ self.onmessage = event => {
       rgb = rgb.map(value=>value/(pixels.length/4));
     }
     const rows = processor.feed(t, rgb[0], rgb[1]);
-    self.postMessage({kind: 'result', id, t, rgb, frame, rows, processing_ms: performance.now() - start});
+    const hrv = rows.map(row=>hrvTracker.feed(row)).filter(Boolean);
+    self.postMessage({kind: 'result', id, t, rgb, frame, rows, hrv, processing_ms: performance.now() - start});
   } catch (error) { self.postMessage({kind: 'error', message: error.message}); }
 };

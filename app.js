@@ -155,7 +155,7 @@
       const ctx = canvas.getContext('2d'); ctx.setTransform(ratio,0,0,ratio,0,0); ctx.clearRect(0,0,w,h);
       const end = Math.max(10, this.lastTime || 0), start = end-10;
       const rows = this.history.filter(row => row.time_s >= start && row.time_s <= end);
-      const left=48, right=w-12, lane=(h-24)/3;
+      const left=48, right=w-12, lane=(h-24)/3, compact=h<180;
       ctx.font='10px sans-serif'; ctx.fillStyle='#9db1c3';
       ctx.fillText(`${start.toFixed(0)} s`,left,h-6); ctx.fillText(`${end.toFixed(0)} s`,right-28,h-6);
       const gap = this.displayGap;
@@ -164,12 +164,16 @@
         rows.forEach(row=>{if(row[key]!==null){lo=Math.min(lo,row[key]);hi=Math.max(hi,row[key]);}});
         const hasData=Number.isFinite(lo), pad=hasData ? Math.max(.005,(hi-lo)*.15) : 1;
         lo=hasData ? lo-pad : -1; hi=hasData ? hi+pad : 1;
-        const top=index*lane+14, bottom=(index+1)*lane-10, y=value=>bottom-(value-lo)/(hi-lo)*(bottom-top);
+        const inset=Math.min(6,lane*.15);
+        const top=index*lane+(compact?inset:14), bottom=(index+1)*lane-(compact?inset:10), y=value=>bottom-(value-lo)/(hi-lo)*(bottom-top);
         ctx.lineWidth=1; ctx.strokeStyle='#254056'; ctx.fillStyle='#9db1c3';
-        ctx.fillText(['X','Y','Z'][index],2,top-2);
+        ctx.font=compact?'8px sans-serif':'10px sans-serif';
+        const label=['X','Y','Z'][index], last=rows[rows.length-1]?.[key], valueLabel=Number.isFinite(last)?last.toFixed(2):'—';
+        if(compact && lane<22)ctx.fillText(label+' '+valueLabel,2,(top+bottom)/2+3);
+        else {ctx.fillText(label,2,compact?(top+bottom)/2-1:top-2);if(compact)ctx.fillText(valueLabel,2,(top+bottom)/2+9);}
         [lo,hi].forEach(value=>{
           const yy=y(value);ctx.beginPath();ctx.moveTo(left,yy);ctx.lineTo(right,yy);ctx.stroke();
-          ctx.fillText(Math.abs(value)>=100 ? value.toFixed(0) : value.toFixed(2),2,yy+9);
+          if(!compact)ctx.fillText(Math.abs(value)>=100 ? value.toFixed(0) : value.toFixed(2),2,yy+9);
         });
         if(!hasData){ctx.fillText('暂无该轴数据',left+12,top+22);return;}
         ctx.strokeStyle=['#83e9ca','#80baff','#f4be80'][index]; ctx.lineWidth=1.4; ctx.beginPath(); let prev=null;
@@ -191,6 +195,7 @@
       this.running = false; this.starting = false; this.token = 0; this.worker = null; this.stream = null;
       this.callbackId = null; this.timer = null; this.healthTimer = null; this.wakeLock = null;
       this.motion = new MotionCapture();
+      this.hrvRows = []; this.currentHrv = null;
       this.actionNote = $('action-note').textContent;
       this.cameraId = '';
       try { this.cameraId = window.localStorage.getItem(CAMERA_KEY) || ''; } catch (_) {}
@@ -277,13 +282,20 @@
     paint() { if (this.width && this.waveVisible !== false) PPGView.drawWave(this.ctx, this.width, this.height, this.history, this.lastTime || 0); }
     setupSession(mode) {
       this.rows = []; this.frames = []; this.history = []; this.arrivals = [];
+      this.hrvRows = []; this.currentHrv = null; this.hrvTracker = null; this.renderHrv();
       this.lastTime = 0; this.lastTimestamp = null; this.lastFrameKey = null; this.lastUi = 0; this.lastPaint = 0;
       this.framesSeen = 0; this.framesSkipped = 0; this.presentedMissed = 0; this.busy = false; this.requestId = 0;
       this.pendingFrames = 0; this.cameraEvents = []; this.cameraInterruptions = []; this.pageEvents = []; this.cameraEnded = false;
       this.cameraMuted = false; this.cameraStalled = false; this.latestRgb = null;
       this.mode = mode; this.origin = performance.now(); this.lastFrameWall = this.origin; this.receivedFrame = false;
       this.motion.reset(mode, this.origin, !!$('imu-enabled').checked);
-      this.metadata = {version: 4, build: 'focus-capture-v4', mode, started_at: new Date().toISOString(), backend: null, video_uploaded: false,
+      this.metadata = {version: 5, build: 'hrv-30s-v5', mode, started_at: new Date().toISOString(), backend: null, video_uploaded: false,
+        hrv: {source:'PPG pulse-to-pulse intervals (PRV), not ECG RR/NN intervals',window_s:30,update_s:5,
+          time_domain:'SDRR: sample standard deviation (N-1); RMSSD: RMS successive differences; pNN50: differences strictly greater than 50 ms / (N-1) * 100.',
+          frequency_domain:'Exploratory 30 s only. Interval midpoints linearly interpolated at 4 Hz within observed bounds, linear detrend, periodic Hann periodogram, 512-point frequency grid, trapezoidal band integration. LF 0.04-0.15 Hz, HF 0.15-0.40 Hz. Zero padding does not improve true resolution.',
+          low_variance_rule:'LF/HF withheld if detrended interpolated PPI variance < 1 ms^2 or HF <= 1e-6 ms^2.',
+          quality:'30 s uninterrupted initialized primary; >=15 complete intervals spanning >=26 s; last HR tracking; arrival p90 interval <=40 ms and max <=100 ms. Reject entire window if any PPI outside 300-1500 ms or >20% from local 5-interval median. No beat deletion, ectopic correction or gap repair.',
+          timing:'Parabolic pulse-peak refinement on the 60 Hz primary grid; not hardware timing accuracy. Values are duration-dependent and not equivalent to a standard 5-minute ECG HRV assessment.'},
         motion_capture_api: 'Window DeviceMotionEvent; browser-controlled cadence, no independent sensor thread or requested 100 Hz.',
         session_origin_performance_ms: this.origin, performance_time_origin_unix_ms: finite(performance.timeOrigin),
         synchronization: 'PPG and IMU use the same session origin on the page performance clock. Callback times are not hardware capture times; sensor/camera delay is not calibrated.',
@@ -298,7 +310,7 @@
       $('mode-pill').className = 'mode-pill ' + (mode === 'demo' ? 'demo' : 'live');
       this.processor = null;
       try {
-        this.worker = new Worker('worker.js?v=4');
+        this.worker = new Worker('worker.js?v=5');
         const token = this.token;
         this.worker.onmessage = event => {
           if (token !== this.token || !this.running) return;
@@ -308,7 +320,7 @@
         this.worker.onerror = () => { if (token === this.token) this.stop('计算模块加载失败，请刷新页面并检查部署文件'); };
         this.metadata.processing = 'Web Worker';
       } catch (_) {
-        this.worker = null; this.processor = new FingerPPG.PrimaryStream(); this.metadata.processing = 'main-thread fallback';
+        this.worker = null; this.processor = new FingerPPG.PrimaryStream(); this.hrvTracker = new FingerPPG.HRVTracker(); this.metadata.processing = 'main-thread fallback';
       }
       this.paint();
     }
@@ -513,12 +525,14 @@
           rgb = rgb.map(value=>value/(pixels.length/4)); input.rgb = rgb;
         }
         const start = performance.now(), rows = this.processor.feed(t, rgb[0], rgb[1]);
-        this.accept({...input, rows, processing_ms: performance.now() - start});
+        const hrv = rows.map(row=>this.hrvTracker.feed(row)).filter(Boolean);
+        this.accept({...input, rows, hrv, processing_ms: performance.now() - start});
       }
     }
     accept(result) {
       const {t, rgb, frame, rows} = result;
       this.rows.push(...rows); this.history.push(...rows); this.lastTime = t;
+      if (result.hrv?.length) { this.hrvRows.push(...result.hrv); this.currentHrv = result.hrv[result.hrv.length-1]; }
       this.latestRgb = rgb;
       this.frames.push({time_s: t, red: rgb[0], green: rgb[1], blue: rgb[2],
         callback_performance_ms: frame.callback_performance_ms ?? null,
@@ -545,6 +559,28 @@
       $('fps').textContent = rate.toFixed(1); $('elapsed').textContent = (this.mode === 'camera' ? clockTime : this.lastTime).toFixed(1);
       $('red').textContent = rgb[0].toFixed(1); $('export').disabled = !this.hasData();
       $('export-note').textContent = this.mode === 'demo' ? '演示数据，文件名带 DEMO 标记。' : '数据保存在当前页面，请在关闭前下载。';
+      this.renderHrv();
+    }
+    renderHrv() {
+      const hrv = this.currentHrv;
+      const interrupted = this.cameraStalled || this.cameraMuted || this.cameraEnded;
+      const valid = hrv?.status === 'tracking' && !interrupted;
+      const fields = {'hrv-sdrr':'sdrr_ms','hrv-rmssd':'rmssd_ms','hrv-pnn50':'pnn50_pct','hrv-lfhf':'lf_hf_ratio'};
+      for (const [id,key] of Object.entries(fields))
+        $(id).textContent = valid && Number.isFinite(hrv[key]) ? hrv[key].toFixed(key==='lf_hf_ratio'?2:1) : '—';
+      let message = '等待连续 30 s 信号';
+      if (interrupted) message = '相机暂缓 · 等待有效信号';
+      else if (valid) message = `${this.running?'':'已停止 · '}${hrv.interval_count} 间期 · ${hrv.time_s.toFixed(0)} s 更新`;
+      else if (hrv?.status === 'collecting') {
+        const latest = this.rows[this.rows.length-1];
+        const span = this.running && latest?.ready ? Math.min(30,hrv.valid_signal_s+Math.max(0,latest.time_s-hrv.time_s)) : hrv.valid_signal_s;
+        message = `累计 ${span.toFixed(0)} / 30 s`;
+      } else if (hrv?.status === 'low_frame_rate') message = '到帧率不足或缺帧';
+      else if (hrv?.status === 'artifact') message = '间期异常 · 本窗口不显示';
+      else if (hrv && hrv.status !== 'warming_up') message = '信号不足或不稳 · 等待更新';
+      $('hrv-status').textContent = message;
+      $('hrv-note').textContent = valid && hrv.lf_hf_status === 'low_variance' ?
+        'PPG 估计 · 间期波动不足，LF/HF 留空' : 'PPG 估计 · LF/HF 为 30 s 粗估';
     }
     startDemo() {
       if (this.running || this.starting) return;
@@ -586,7 +622,7 @@
       $('preview-empty').lastElementChild.textContent = '开始后显示相机预览';
       $('mode-pill').textContent = this.mode === 'demo' ? '演示 · 已停止' : '已停止';
       $('mode-pill').className = 'mode-pill' + (this.mode === 'demo' ? ' demo' : '');
-      $('export').disabled = !this.hasData(); this.paint(); this.environment();
+      $('export').disabled = !this.hasData(); this.renderHrv(); this.paint(); this.environment();
     }
     hasData() { return this.rows.length > 0 || this.frames.length > 0 || this.motion.rows.length > 0; }
     exportData() {
@@ -597,11 +633,15 @@
       const metadata = {...this.metadata, exported_at: new Date().toISOString(), imu: this.motion.summary(),
           camera_interruptions: this.cameraInterruptions, page_interactions: this.pageEvents,
           frames_received: this.framesSeen, processed_frames: this.frames.length, application_skipped_frames: this.framesSkipped,
-          missed_presented_frames: this.presentedMissed, waveform_rows: this.rows.length};
+          missed_presented_frames: this.presentedMissed, waveform_rows: this.rows.length, hrv_latest:this.currentHrv};
       if (type === 'metadata' || type === 'session') {
-        content = JSON.stringify(type === 'session' ? {metadata, waveform: this.rows, frames: this.frames, camera_events: this.cameraEvents, imu: this.motion.rows} : metadata, null, 2);
+        content = JSON.stringify(type === 'session' ? {metadata, waveform: this.rows, frames: this.frames, camera_events: this.cameraEvents, imu: this.motion.rows, hrv:this.hrvRows} : metadata, null, 2);
         extension = '.json'; mime = 'application/json';
         if (type === 'session') extension = '_session.json';
+      } else if (type === 'hrv') {
+        const keys = ['time_s','available_time_s','status','window_s','valid_signal_s','interval_count','interval_span_s','rejected_interval_count','mean_ppi_ms','sdrr_ms','rmssd_ms','pnn50_pct','lf_power_ms2','hf_power_ms2','lf_hf_ratio','lf_hf_status','spectral_span_s','spectral_resolution_hz'];
+        content = keys.join(',')+'\n'+this.hrvRows.map(row=>keys.map(key=>row[key]??'').join(',')).join('\n')+'\n';
+        extension = '_hrv30s.csv'; mime = 'text/csv;charset=utf-8';
       } else if (type === 'imu') {
         const keys = ['time_s','callback_performance_ms','event_timestamp_ms','reported_interval_ms','callback_interval_ms','event_interval_ms',...MOTION_FIELDS,'has_sensor_value'];
         content = keys.join(',') + '\n' + this.motion.rows.map(row => keys.map(key => row[key] ?? '').join(',')).join('\n') + '\n';

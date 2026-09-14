@@ -181,7 +181,118 @@
       this.previousTime = t; this.previousRed = red; return rows;
     }
   }
-  const api = {PrimaryStream, HeartRateTracker, FS, SOS};
+  // HRV-style statistics of PPG pulse intervals (PRV), separate from the existing
+  // primary/heart-rate path. No ECG R peaks or normal-beat classification is implied.
+  function hrvTimeDomain(ppi) {
+    if (ppi.length < 2 || ppi.some(value => !Number.isFinite(value) || value <= 0))
+      return {mean_ppi_ms:null, sdrr_ms:null, rmssd_ms:null, pnn50_pct:null};
+    const m = mean(ppi), differences = ppi.slice(1).map((value, i) => value-ppi[i]);
+    return {mean_ppi_ms:m,
+      sdrr_ms:Math.sqrt(ppi.reduce((sum,value)=>sum+(value-m)**2,0)/(ppi.length-1)),
+      rmssd_ms:Math.sqrt(mean(differences.map(value=>value**2))),
+      pnn50_pct:100*differences.filter(value=>Math.abs(value)>50+1e-7).length/differences.length};
+  }
+  function hrvFrequency(times, ppi) {
+    const empty = {lf_power_ms2:null, hf_power_ms2:null, lf_hf_ratio:null,
+      lf_hf_status:'insufficient_data', spectral_span_s:null, spectral_resolution_hz:null};
+    if (times.length !== ppi.length || times.length < 3 || times.some((t,i)=>!Number.isFinite(t) || (i && t<=times[i-1])) ||
+        ppi.some(value=>!Number.isFinite(value) || value<=0)) return empty;
+    // Interpolate only between observed interval midpoints; never extrapolate or
+    // bridge an invalid window. Interpolation here is spectral analysis, not data repair.
+    const rate=4, values=[];
+    let j=0;
+    for(let i=0;times[0]+i/rate<=times[times.length-1]+1e-9;i++) {
+      const t=times[0]+i/rate;
+      while(j<times.length-2 && times[j+1]<t)j++;
+      values.push(ppi[j]+(ppi[j+1]-ppi[j])*(t-times[j])/(times[j+1]-times[j]));
+    }
+    if(values.length<16)return empty;
+    const y=detrend(values), n=y.length, size=512, df=rate/size;
+    const result={...empty,spectral_span_s:(n-1)/rate,spectral_resolution_hz:rate/n};
+    // A constant/near-constant train cannot support a meaningful LF/HF ratio.
+    if(mean(y.map(value=>value**2))<1) return {...result,lf_hf_status:'low_variance'};
+    const weights=y.map((_,i)=>.5-.5*Math.cos(2*Math.PI*i/n));
+    const normalization=rate*weights.reduce((sum,w)=>sum+w*w,0), density=[];
+    for(let k=0;k<=Math.ceil(.4/df);k++) {
+      let re=0,im=0;
+      y.forEach((value,i)=>{const phase=2*Math.PI*k*i/size;re+=value*weights[i]*Math.cos(phase);im-=value*weights[i]*Math.sin(phase);});
+      density.push((k===0?1:2)*(re*re+im*im)/normalization);
+    }
+    const integrate=(low,high)=>{
+      let sum=0;
+      for(let k=1;k<density.length;k++) {
+        const x=(k-1)*df, a=Math.max(low,x), b=Math.min(high,k*df);
+        if(b<=a)continue;
+        const at=f=>density[k-1]+(density[k]-density[k-1])*(f-x)/df;
+        sum+=(at(a)+at(b))*(b-a)/2;
+      }
+      return sum;
+    };
+    const lf=integrate(.04,.15),hf=integrate(.15,.4);
+    return {...result,lf_power_ms2:lf,hf_power_ms2:hf,
+      lf_hf_ratio:hf>1e-6?lf/hf:null,lf_hf_status:hf>1e-6?'exploratory_30s':'insufficient_hf'};
+  }
+  function emptyHRV(status='collecting',span=0) {
+    return {time_s:null,available_time_s:null,status,window_s:30,valid_signal_s:span,
+      interval_count:0,interval_span_s:null,rejected_interval_count:0,
+      mean_ppi_ms:null,sdrr_ms:null,rmssd_ms:null,pnn50_pct:null,
+      lf_power_ms2:null,hf_power_ms2:null,lf_hf_ratio:null,lf_hf_status:'insufficient_data',
+      spectral_span_s:null,spectral_resolution_hz:null,pulse_times_s:[],ppi_ms:[]};
+  }
+  class HRVTracker {
+    constructor() {this.segment=null;this.clear();}
+    clear(status='collecting') {this.history=[];this.lastUpdate=null;this.current=emptyHRV(status);}
+    feed(row) {
+      const segmentChanged=this.segment!==row.segment;
+      if(segmentChanged){this.clear();this.segment=row.segment;}
+      if(!row.ready || !Number.isFinite(row.primary_bvp)) {
+        const status=row.status==='tracking'?'invalid_signal':row.status;
+        const changed=segmentChanged || this.history.length>0 || this.current.status!==status;
+        this.clear(status);this.current.time_s=row.time_s;this.current.available_time_s=row.available_time_s;
+        return changed?this.current:null;
+      }
+      const last=this.history[this.history.length-1];
+      if(last && Math.abs(row.time_s-last.time_s-1/FS)>1e-7)this.clear();
+      this.history.push(row);
+      while(this.history[0].time_s<row.time_s-30-1e-9)this.history.shift();
+      const span=row.time_s-this.history[0].time_s;
+      if(this.lastUpdate!==null && row.time_s-this.lastUpdate<5-1e-9)return null;
+      this.lastUpdate=row.time_s;
+      this.current=span<30-1e-7?emptyHRV('collecting',span):this.estimate(row);
+      this.current.time_s=row.time_s;this.current.available_time_s=row.available_time_s;
+      return this.current;
+    }
+    estimate(row) {
+      const result=emptyHRV('unreliable',30);
+      const arrivals=[...new Set(this.history.map(r=>r.available_time_s))].sort((a,b)=>a-b);
+      const deltas=arrivals.slice(1).map((t,i)=>t-arrivals[i]);
+      // Application quality thresholds, not a claim that a camera is ECG-accurate.
+      if(deltas.length<3 || percentile(deltas,.9)>1/25+1e-9 || Math.max(...deltas)>.1+1e-9)
+        return {...result,status:'low_frame_rate'};
+      const y=detrend(this.history.map(r=>r.primary_bvp)), scale=std(y);
+      if(scale<1e-7 || row.heart_rate_status!=='tracking')return result;
+      const found=peaks(y,Math.floor(FS*60/200),.6*scale);
+      const times=found.map(p=>{
+        const denominator=y[p-1]-2*y[p]+y[p+1];
+        const offset=Math.abs(denominator)>1e-20?.5*(y[p-1]-y[p+1])/denominator:0;
+        return this.history[p].time_s+Math.max(-.5,Math.min(.5,offset))/FS;
+      });
+      const ppi=times.slice(1).map((t,i)=>(t-times[i])*1000);
+      Object.assign(result,{pulse_times_s:times,ppi_ms:ppi,interval_count:ppi.length,
+        interval_span_s:times.length>1?times[times.length-1]-times[0]:0});
+      if(ppi.length<15 || result.interval_span_s<26)return {...result,status:'insufficient_beats'};
+      // Reject the whole window rather than deleting beats and creating false
+      // successive differences across an artifact. No ectopic-beat correction.
+      result.rejected_interval_count=ppi.filter((value,i)=>{
+        const local=median(ppi.slice(Math.max(0,i-2),Math.min(ppi.length,i+3)));
+        return value<300 || value>1500 || Math.abs(value-local)>.2*local;
+      }).length;
+      if(result.rejected_interval_count)return {...result,status:'artifact'};
+      const intervalTimes=times.slice(1).map((t,i)=>(t+times[i])/2);
+      return {...result,status:'tracking',...hrvTimeDomain(ppi),...hrvFrequency(intervalTimes,ppi)};
+    }
+  }
+  const api = {PrimaryStream, HeartRateTracker, HRVTracker, hrvTimeDomain, hrvFrequency, FS, SOS};
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.FingerPPG = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
