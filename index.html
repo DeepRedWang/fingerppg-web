@@ -7,10 +7,10 @@
   <meta name="description" content="用手机摄像头查看指尖 primary 波形和心率估计。所有计算在本机完成。">
   <title>指尖脉搏 · FingerPPG</title>
   <link rel="icon" href="icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="style.css?v=3">
+  <link rel="stylesheet" href="style.css?v=4">
   <script src="ppg-core.js" defer></script>
   <script src="ppg-view.js" defer></script>
-  <script src="app.js?v=3" defer></script>
+  <script src="app.js?v=4" defer></script>
 </head>
 <body>
   <div class="shell">
@@ -30,7 +30,7 @@
             <div class="stats"><div><span>实际到帧率</span><strong id="fps">—</strong><small>Hz</small></div><div><span>采集时长</span><strong id="elapsed">0.0</strong><small>s</small></div><div><span>红通道均值</span><strong id="red">—</strong></div></div>
           </section>
           <label class="field-label" for="capture-fps">相机目标帧率</label><select id="capture-fps"><option value="60">60 Hz · 原采集设置</option><option value="30">30 Hz · 减轻采集负载</option></select>
-          <div class="capture-actions"><button id="start" class="primary" type="button">开始采集</button><button id="demo" class="secondary" type="button">体验 72 bpm 演示</button></div>
+          <div class="capture-actions"><button id="start" class="primary" type="button">开始采集</button><button id="demo" class="secondary" type="button">体验 72 bpm 演示</button><button id="focus" class="secondary focus-button" type="button" disabled>固定采集画面</button></div>
           <p class="action-note" id="action-note">开始时申请相机与运动权限，可在下方关闭 IMU。演示不会访问相机或传感器。</p>
           <section class="card imu-card" aria-labelledby="imu-heading">
             <div class="card-heading"><h2 id="imu-heading">三轴加速度</h2><span id="imu-mode">等待采集</span></div>
@@ -38,6 +38,7 @@
             <p id="imu-status" class="caption" role="status">点击开始后申请运动权限，与 PPG 一起记录。</p>
             <div class="stats imu-stats"><div><span>实际有效事件率</span><strong id="imu-rate">—</strong><small>Hz</small></div><div><span>平均间隔</span><strong id="imu-interval">—</strong><small>ms</small></div><div><span>间隔标准差</span><strong id="imu-jitter">—</strong><small>ms</small></div></div>
             <p id="imu-timing" class="caption">最近 5 秒的回调间隔；硬件采样率尚未测定。</p>
+            <p id="imu-diagnostic" class="caption">回调间隔和缺失轴会分别记录。</p>
             <p class="field-label">加速度计 · 含重力 · m/s²</p>
             <div class="imu-legend"><span>X <i></i></span><span>Y <i></i></span><span>Z <i></i></span><span id="imu-accel-values">—</span></div>
             <canvas id="imu-accel" class="imu-wave" aria-label="最近十秒的三轴加速度"></canvas>
@@ -64,6 +65,8 @@
       <details class="help"><summary>使用提示与测量说明</summary><div class="help-body">
         <p>首次使用允许浏览器访问摄像头。手机优先选择独立后置主摄，排除双摄、三摄等组合设备，选定后记住设备编号。iPhone 无法确认独立镜头时会提示并停止。升级后会重新选择一次镜头，避免沿用旧的组合相机；请在镜头名称确定后覆盖镜头。默认请求 60 Hz，也可在开始前选 30 Hz 减轻负载；实际到帧率仍受曝光和浏览器调度影响。</p>
         <p>首次心率需要 3 秒滤波初始化和至少 5 秒有效波形。实际到帧率取决于手机与浏览器；重采样到 60 Hz 不会提高摄像头实际采样率。</p>
+        <p>手机开始后自动进入固定采集画面，PPG、三轴加速度和停止按钮同屏显示，避免来回滑动。点击「展开页面」可继续采集并浏览完整页面，但 Safari 滚动时可能暂停运动事件。停止后恢复正常页面。真实加速度频率仍由浏览器决定，不支持设置为 100 Hz。</p>
+        <p>曲线会在回调间隔超过 100 ms 或某轴缺失时断开。诊断行显示距上次数据的时间、超过 100 ms 的缺口数和缺轴事件数。CSV 另存回调间隔与浏览器事件时间戳的间隔；JSON 记录滚动和布局变化，便于区分显示停顿与数据派发停顿。不会填补缺失样本。</p>
         <p>勾选「同时采集三轴加速度」后，开始时允许「运动与方向」权限。只读取并保存含重力加速度的 X/Y/Z，单位 m/s²。未授权或设备不支持时仍可采集 PPG。事件率取最近 5 秒的有效加速度回调；不把浏览器报告间隔当作实际采样间隔。相机短暂静音或缺帧不会停止加速度；加速度无事件时保留监听并尝试恢复，不用插值填平真实缺口。</p>
         <p>完整会话 JSON 一次下载全部数据；IMU CSV 保留每次事件的原始字段、浏览器事件时间戳、回调时间与报告间隔。两路 time_s 以会话开始为零点，不做强制插值配对。浏览器可能降低精度，当前未从 IMU 提取心脏事件，也不输出 PTT 或血压。</p>
         <p>切换到后台或锁屏会停止采集。单次最多 5 分钟。重新开始会建立新会话，刷新或关闭页面会丢失尚未下载的数据，请先导出需要保留的结果。</p>
@@ -71,7 +74,7 @@
         <p>心率为算法估计，尚未进行参考心率验证。时间戳记录浏览器帧回调时刻，不是硬件曝光时间。</p>
       </div></details>
     </main>
-    <footer><span>FingerPPG · 单镜头 / 三轴加速度 v3</span><span>本地处理 · 无视频上传 · 无补光</span></footer>
+    <footer><span>FingerPPG · 固定采集画面 v4</span><span>本地处理 · 无视频上传 · 无补光</span></footer>
   </div>
   <noscript>本页面需要启用 JavaScript 才能采集和显示波形。</noscript>
 </body>

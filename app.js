@@ -5,6 +5,7 @@
   // v1 could pin a virtual multi-lens camera. Deliberately reselect once after upgrade.
   const CAMERA_KEY = 'fingerppg.single-camera.v2';
   const MOTION_FIELDS = ['accel_x_m_s2', 'accel_y_m_s2', 'accel_z_m_s2'];
+  const MOTION_GAP_MS = 100;
   const finite = value => Number.isFinite(value) ? value : null;
   function physicalRearScore(label) {
     const name = (label || '').trim().toLowerCase();
@@ -34,7 +35,8 @@
     reset(mode, origin, enabled) {
       this.stop(); this.rows = []; this.history = []; this.mode = mode; this.origin = origin;
       this.enabled = enabled; this.permission = enabled ? 'pending' : 'disabled';
-      this.nullEvents = 0; this.validEvents = 0; this.lastValid = null; this.lastEvent = null; this.lastTime = 0;
+      this.nullEvents = 0; this.partialEvents = 0; this.validEvents = 0; this.lastValid = null; this.lastEvent = null; this.lastTime = 0;
+      this.lastEventTimestamp = null;
       this.restarts = 0; this.consecutiveRestarts = 0; this.lastRestart = origin; this.gaps = [];
       this.state = enabled ? 'waiting' : 'disabled';
       this.message = enabled ? '等待运动权限与传感器数据…' : '本次未启用 IMU';
@@ -58,11 +60,15 @@
       if (!this.active) return;
       const row = {time_s: (now - this.origin) / 1000, callback_performance_ms: now,
         event_timestamp_ms: finite(event.timeStamp), reported_interval_ms: finite(event.interval),
+        callback_interval_ms: this.lastEvent === null ? null : now-this.lastEvent,
+        event_interval_ms: this.lastEventTimestamp === null || !Number.isFinite(event.timeStamp) ? null : event.timeStamp-this.lastEventTimestamp,
         accel_x_m_s2: finite(event.accelerationIncludingGravity?.x), accel_y_m_s2: finite(event.accelerationIncludingGravity?.y), accel_z_m_s2: finite(event.accelerationIncludingGravity?.z)};
       row.has_sensor_value = MOTION_FIELDS.some(key => row[key] !== null);
-      if (this.lastEvent !== null && now - this.lastEvent > 250)
+      if (this.lastEvent !== null && now - this.lastEvent > MOTION_GAP_MS)
         this.gaps.push({start_s: (this.lastEvent-this.origin)/1000, end_s: row.time_s, duration_ms: now-this.lastEvent});
       this.rows.push(row); this.lastTime = row.time_s; this.lastEvent = now;
+      this.lastEventTimestamp = row.event_timestamp_ms;
+      if (MOTION_FIELDS.some(key=>row[key]===null)) this.partialEvents++;
       if (row.has_sensor_value) { this.validEvents++; this.lastValid = now; this.state = 'receiving'; this.consecutiveRestarts = 0; }
       else this.nullEvents++;
       // Bound memory even if a device emits unusually fast motion events.
@@ -112,7 +118,9 @@
       return {enabled: this.enabled, permission: this.permission, status: this.state, mode: this.mode,
         ...this.stats(this.rows), null_events: this.nullEvents, max_events: 120000,
         source: 'DeviceMotionEvent.accelerationIncludingGravity', includes_gravity: true,
-        listener_restarts: this.restarts, gaps_over_250ms: this.gaps,
+        listener_restarts: this.restarts, gaps_over_100ms: this.gaps,
+        gaps_over_250ms: this.gaps.filter(gap=>gap.duration_ms>250), partial_axis_events:this.partialEvents,
+        plot_gap_threshold_ms: MOTION_GAP_MS,
         fields_with_values: Object.fromEntries(MOTION_FIELDS.map(key => [key, this.rows.reduce((n, row) => n + (row[key] !== null ? 1 : 0), 0)])),
         timestamp_basis: this.mode === 'demo' ? 'Synthetic 50 Hz signal times; event_timestamp_ms is null.' :
           'time_s = (callback_performance_ms - session_origin_performance_ms) / 1000. event_timestamp_ms is the unmodified browser Event.timeStamp, not a hardware sample timestamp.',
@@ -126,12 +134,14 @@
       while (first && this.rows[first-1].time_s >= this.lastTime-12) first--;
       this.history = this.rows.slice(first);
       const recent = this.history.filter(row => row.time_s >= this.lastTime - 5), stats = this.stats(recent);
-      this.displayGap = Math.max(.1, Math.min(.5, (stats.interval_mean_ms || 20)*3/1000));
+      this.displayGap = MOTION_GAP_MS/1000;
       const fmt = value => value === null || !Number.isFinite(value) ? '—' : value.toFixed(1);
       $('imu-rate').textContent = fmt(stats.rate_hz); $('imu-interval').textContent = fmt(stats.interval_mean_ms);
       $('imu-jitter').textContent = fmt(stats.interval_std_ms);
       const last = this.rows[this.rows.length - 1];
       $('imu-timing').textContent = `最近 5 秒 · 最大间隔 ${fmt(stats.interval_max_ms)} ms · 浏览器报告 ${fmt(last?.reported_interval_ms)} ms · 已记录 ${this.rows.length} 条`;
+      const age = this.lastEvent == null ? null : (this.active ? performance.now()-this.lastEvent : 0);
+      $('imu-diagnostic').textContent = `${this.active ? '距上次数据 '+fmt(age)+' ms' : '加速度记录'} · >100 ms 缺口 ${this.gaps?.length || 0} 次 · 缺轴事件 ${this.partialEvents || 0} 条`;
       const keys = MOTION_FIELDS;
       $('imu-accel-values').textContent = keys.map(key => last && last[key] !== null ? last[key].toFixed(2) : '—').join(' / ');
       if (this.visible !== false) this.draw($('imu-accel'), keys);
@@ -181,6 +191,7 @@
       this.running = false; this.starting = false; this.token = 0; this.worker = null; this.stream = null;
       this.callbackId = null; this.timer = null; this.healthTimer = null; this.wakeLock = null;
       this.motion = new MotionCapture();
+      this.actionNote = $('action-note').textContent;
       this.cameraId = '';
       try { this.cameraId = window.localStorage.getItem(CAMERA_KEY) || ''; } catch (_) {}
       this.mobileCamera = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '') ||
@@ -190,10 +201,21 @@
       $('start').addEventListener('click', () => this.running || this.starting ? this.stop('已停止 · 可下载本次数据') : this.startCamera());
       $('demo').addEventListener('click', () => this.startDemo());
       $('export').addEventListener('click', () => this.exportData());
+      $('focus').addEventListener('click', () => this.setFocus(!this.focusMode));
+      this.preventPagePan = event => { if (event.cancelable) event.preventDefault(); };
+      this.lastScrollLogged = -Infinity;
+      window.addEventListener('scroll', event => {
+        if (!this.running || performance.now()-this.lastScrollLogged < 100) return;
+        this.lastScrollLogged = performance.now();
+        this.logPageEvent('scroll', event, {scroll_y:window.scrollY || 0});
+      }, {passive:true});
       document.addEventListener('visibilitychange', () => { if (document.hidden && (this.running || this.starting)) this.stop('已切到后台 · 采集停止'); });
       window.addEventListener('pagehide', () => this.stop('页面已离开 · 采集停止'));
       window.addEventListener('resize', () => this.resize());
-      if (typeof ResizeObserver !== 'undefined') new ResizeObserver(() => this.resize()).observe(this.canvas);
+      if (typeof ResizeObserver !== 'undefined') {
+        const observer = new ResizeObserver(() => this.resize());
+        observer.observe(this.canvas); observer.observe($('imu-accel'));
+      }
       if (typeof IntersectionObserver !== 'undefined') {
         const observer = new IntersectionObserver(entries => entries.forEach(entry => {
           if (entry.target === this.canvas) { this.waveVisible = entry.isIntersecting; if (entry.isIntersecting) this.paint(); }
@@ -216,20 +238,53 @@
     resize() {
       const box = this.canvas.getBoundingClientRect(), ratio = Math.min(window.devicePixelRatio || 1, 2);
       if (!box.width || !box.height) return;
+      const motionBox = $('imu-accel').getBoundingClientRect();
+      const pw = Math.round(box.width*ratio), ph = Math.round(box.height*ratio);
+      const changed = this.canvas.width!==pw || this.canvas.height!==ph;
+      const motionChanged = !this.motion.box || this.motion.box.width!==motionBox.width || this.motion.box.height!==motionBox.height;
+      if (!changed && !motionChanged) return;
       this.width = box.width; this.height = box.height;
-      this.canvas.width = Math.round(box.width * ratio); this.canvas.height = Math.round(box.height * ratio);
-      this.ctx.setTransform(ratio, 0, 0, ratio, 0, 0); this.motion.box = null; this.paint(); this.motion.render();
+      if (changed) { this.canvas.width = pw; this.canvas.height = ph; this.ctx.setTransform(ratio,0,0,ratio,0,0); }
+      this.motion.box = motionBox; this.paint(); this.motion.render();
+      this.logPageEvent('canvas-resize', null, {ppg_width:pw, ppg_height:ph, accel_width:motionBox.width, accel_height:motionBox.height});
+    }
+    logPageEvent(kind, event, extra = {}) {
+      if (!this.running || !this.pageEvents || this.pageEvents.length >= 3000) return;
+      this.pageEvents.push({kind,time_s:(performance.now()-this.origin)/1000,
+        event_timestamp_ms:finite(event?.timeStamp),...extra});
+    }
+    setFocus(enabled) {
+      enabled = !!enabled && this.running;
+      if (!!this.focusMode === enabled) return;
+      this.focusMode = enabled;
+      if (enabled) {
+        this.savedScroll = window.scrollY || 0;
+        document.body.classList.add('capture-focus');
+        document.documentElement.classList.add('capture-focus-root');
+        document.addEventListener('touchmove', this.preventPagePan, {passive:false});
+        document.addEventListener('wheel', this.preventPagePan, {passive:false});
+      } else {
+        document.body.classList.remove('capture-focus');
+        document.documentElement.classList.remove('capture-focus-root');
+        document.removeEventListener('touchmove', this.preventPagePan);
+        document.removeEventListener('wheel', this.preventPagePan);
+        if (window.scrollTo) window.scrollTo(0,this.savedScroll || 0);
+      }
+      $('focus').textContent = enabled ? '展开页面' : '固定采集画面';
+      $('action-note').textContent = enabled ? '画面已固定 · 停止后可下载完整数据' : this.actionNote;
+      this.logPageEvent(enabled ? 'focus-enter' : 'focus-exit'); this.resize();
     }
     paint() { if (this.width && this.waveVisible !== false) PPGView.drawWave(this.ctx, this.width, this.height, this.history, this.lastTime || 0); }
     setupSession(mode) {
       this.rows = []; this.frames = []; this.history = []; this.arrivals = [];
       this.lastTime = 0; this.lastTimestamp = null; this.lastFrameKey = null; this.lastUi = 0; this.lastPaint = 0;
       this.framesSeen = 0; this.framesSkipped = 0; this.presentedMissed = 0; this.busy = false; this.requestId = 0;
-      this.pendingFrames = 0; this.cameraEvents = []; this.cameraInterruptions = []; this.cameraEnded = false;
+      this.pendingFrames = 0; this.cameraEvents = []; this.cameraInterruptions = []; this.pageEvents = []; this.cameraEnded = false;
       this.cameraMuted = false; this.cameraStalled = false; this.latestRgb = null;
       this.mode = mode; this.origin = performance.now(); this.lastFrameWall = this.origin; this.receivedFrame = false;
       this.motion.reset(mode, this.origin, !!$('imu-enabled').checked);
-      this.metadata = {version: 3, build: 'single-lens-accel-v3', mode, started_at: new Date().toISOString(), backend: null, video_uploaded: false,
+      this.metadata = {version: 4, build: 'focus-capture-v4', mode, started_at: new Date().toISOString(), backend: null, video_uploaded: false,
+        motion_capture_api: 'Window DeviceMotionEvent; browser-controlled cadence, no independent sensor thread or requested 100 Hz.',
         session_origin_performance_ms: this.origin, performance_time_origin_unix_ms: finite(performance.timeOrigin),
         synchronization: 'PPG and IMU use the same session origin on the page performance clock. Callback times are not hardware capture times; sensor/camera delay is not calibrated.',
         requested_flash: false, requested_camera_fps: mode === 'camera' ? this.targetFps : null, filter_fs_hz: 60,
@@ -243,7 +298,7 @@
       $('mode-pill').className = 'mode-pill ' + (mode === 'demo' ? 'demo' : 'live');
       this.processor = null;
       try {
-        this.worker = new Worker('worker.js?v=3');
+        this.worker = new Worker('worker.js?v=4');
         const token = this.token;
         this.worker.onmessage = event => {
           if (token !== this.token || !this.running) return;
@@ -262,6 +317,8 @@
       $('imu-enabled').disabled = true;
       $('capture-fps').disabled = true;
       $('start').textContent = '停止采集'; $('start').disabled = false; $('demo').disabled = true;
+      $('focus').disabled = false;
+      if (this.mobileCamera) this.setFocus(true);
       // One display clock for both streams. Sensor callbacks only append numeric data.
       this.uiTimer = setInterval(() => {
         if (!this.running) return;
@@ -506,7 +563,8 @@
       }, 8);
     }
     stop(message = '已停止') {
-      this.running = false; this.starting = false; ++this.token;
+      this.setFocus(false); this.running = false; this.starting = false; ++this.token;
+      $('focus').disabled = true;
       this.motion.stop(); this.motion.render(); $('imu-enabled').disabled = false; $('capture-fps').disabled = false;
       if (this.uiTimer) clearInterval(this.uiTimer); this.uiTimer = null;
       if (this.callbackId !== null) {
@@ -537,7 +595,7 @@
       const type = $('export-type').value;
       let content, extension, mime;
       const metadata = {...this.metadata, exported_at: new Date().toISOString(), imu: this.motion.summary(),
-          camera_interruptions: this.cameraInterruptions,
+          camera_interruptions: this.cameraInterruptions, page_interactions: this.pageEvents,
           frames_received: this.framesSeen, processed_frames: this.frames.length, application_skipped_frames: this.framesSkipped,
           missed_presented_frames: this.presentedMissed, waveform_rows: this.rows.length};
       if (type === 'metadata' || type === 'session') {
@@ -545,7 +603,7 @@
         extension = '.json'; mime = 'application/json';
         if (type === 'session') extension = '_session.json';
       } else if (type === 'imu') {
-        const keys = ['time_s','callback_performance_ms','event_timestamp_ms','reported_interval_ms',...MOTION_FIELDS,'has_sensor_value'];
+        const keys = ['time_s','callback_performance_ms','event_timestamp_ms','reported_interval_ms','callback_interval_ms','event_interval_ms',...MOTION_FIELDS,'has_sensor_value'];
         content = keys.join(',') + '\n' + this.motion.rows.map(row => keys.map(key => row[key] ?? '').join(',')).join('\n') + '\n';
         extension = '_imu.csv'; mime = 'text/csv;charset=utf-8';
       } else {
