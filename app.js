@@ -1,4 +1,4 @@
-/* Camera and display adapter. All image processing is local; no upload endpoint. */
+/* Camera and signal processing stay local. Optional summary-only LLM gateway. */
 (function () {
   'use strict';
   const $ = id => document.getElementById(id);
@@ -196,6 +196,11 @@
       this.callbackId = null; this.timer = null; this.healthTimer = null; this.wakeLock = null;
       this.motion = new MotionCapture();
       this.hrvRows = []; this.currentHrv = null;
+      this.interpretation = new window.FingerPPGInterpretation(() => {
+        if (this.focusMode) $('action-note').textContent = this.interpretation?.state === 'done' ?
+          'AI 解读已完成 · 停止后查看文字结果' : this.interpretation?.state === 'loading' ?
+          'AI 正在解读 · 采集继续' : '画面已固定 · 停止后可下载完整数据';
+      });
       this.actionNote = $('action-note').textContent;
       this.cameraId = '';
       try { this.cameraId = window.localStorage.getItem(CAMERA_KEY) || ''; } catch (_) {}
@@ -214,8 +219,8 @@
         this.lastScrollLogged = performance.now();
         this.logPageEvent('scroll', event, {scroll_y:window.scrollY || 0});
       }, {passive:true});
-      document.addEventListener('visibilitychange', () => { if (document.hidden && (this.running || this.starting)) this.stop('已切到后台 · 采集停止'); });
-      window.addEventListener('pagehide', () => this.stop('页面已离开 · 采集停止'));
+      document.addEventListener('visibilitychange', () => { if (document.hidden) { this.interpretation.cancel('页面已切到后台，解读请求已取消'); if (this.running || this.starting) this.stop('已切到后台 · 采集停止'); } });
+      window.addEventListener('pagehide', () => { this.interpretation.cancel('页面已离开，解读请求已取消'); this.stop('页面已离开 · 采集停止'); });
       window.addEventListener('resize', () => this.resize());
       if (typeof ResizeObserver !== 'undefined') {
         const observer = new ResizeObserver(() => this.resize());
@@ -281,6 +286,7 @@
     }
     paint() { if (this.width && this.waveVisible !== false) PPGView.drawWave(this.ctx, this.width, this.height, this.history, this.lastTime || 0); }
     setupSession(mode) {
+      this.interpretation.reset(mode);
       this.rows = []; this.frames = []; this.history = []; this.arrivals = [];
       this.hrvRows = []; this.currentHrv = null; this.hrvTracker = null; this.renderHrv();
       this.lastTime = 0; this.lastTimestamp = null; this.lastFrameKey = null; this.lastUi = 0; this.lastPaint = 0;
@@ -289,7 +295,7 @@
       this.cameraMuted = false; this.cameraStalled = false; this.latestRgb = null;
       this.mode = mode; this.origin = performance.now(); this.lastFrameWall = this.origin; this.receivedFrame = false;
       this.motion.reset(mode, this.origin, !!$('imu-enabled').checked);
-      this.metadata = {version: 5, build: 'hrv-30s-v5', mode, started_at: new Date().toISOString(), backend: null, video_uploaded: false,
+      this.metadata = {version: 6, build: 'hrv-llm-v6', mode, started_at: new Date().toISOString(), backend: null, video_uploaded: false,
         hrv: {source:'PPG pulse-to-pulse intervals (PRV), not ECG RR/NN intervals',window_s:30,update_s:5,
           time_domain:'SDRR: sample standard deviation (N-1); RMSSD: RMS successive differences; pNN50: differences strictly greater than 50 ms / (N-1) * 100.',
           frequency_domain:'Exploratory 30 s only. Interval midpoints linearly interpolated at 4 Hz within observed bounds, linear detrend, periodic Hann periodogram, 512-point frequency grid, trapezoidal band integration. LF 0.04-0.15 Hz, HF 0.15-0.40 Hz. Zero padding does not improve true resolution.',
@@ -532,7 +538,10 @@
     accept(result) {
       const {t, rgb, frame, rows} = result;
       this.rows.push(...rows); this.history.push(...rows); this.lastTime = t;
-      if (result.hrv?.length) { this.hrvRows.push(...result.hrv); this.currentHrv = result.hrv[result.hrv.length-1]; }
+      if (result.hrv?.length) {
+        this.hrvRows.push(...result.hrv); this.currentHrv = result.hrv[result.hrv.length-1];
+        if (!this.cameraMuted && !this.cameraStalled && !this.cameraEnded) result.hrv.forEach(hrv => this.interpretation.consider(hrv));
+      }
       this.latestRgb = rgb;
       this.frames.push({time_s: t, red: rgb[0], green: rgb[1], blue: rgb[2],
         callback_performance_ms: frame.callback_performance_ms ?? null,
@@ -631,9 +640,11 @@
       const type = $('export-type').value;
       let content, extension, mime;
       const metadata = {...this.metadata, exported_at: new Date().toISOString(), imu: this.motion.summary(),
+          backend:this.interpretation.attempts ? 'self-hosted text interpretation gateway' : null,
           camera_interruptions: this.cameraInterruptions, page_interactions: this.pageEvents,
           frames_received: this.framesSeen, processed_frames: this.frames.length, application_skipped_frames: this.framesSkipped,
-          missed_presented_frames: this.presentedMissed, waveform_rows: this.rows.length, hrv_latest:this.currentHrv};
+          missed_presented_frames: this.presentedMissed, waveform_rows: this.rows.length, hrv_latest:this.currentHrv,
+          interpretation:this.interpretation.summary()};
       if (type === 'metadata' || type === 'session') {
         content = JSON.stringify(type === 'session' ? {metadata, waveform: this.rows, frames: this.frames, camera_events: this.cameraEvents, imu: this.motion.rows, hrv:this.hrvRows} : metadata, null, 2);
         extension = '.json'; mime = 'application/json';

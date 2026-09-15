@@ -4,13 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#0b1b2c">
-  <meta name="description" content="用手机摄像头查看指尖 primary 波形和心率估计。所有计算在本机完成。">
+  <meta name="description" content="用手机摄像头本地计算指尖波形、心率与 HRV，可选用自有服务器生成文字解读。">
   <title>指尖脉搏 · FingerPPG</title>
   <link rel="icon" href="icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="style.css?v=5-controls-top-header-actions">
+  <link rel="stylesheet" href="style.css?v=6-header-actions">
   <script src="ppg-core.js?v=5" defer></script>
   <script src="ppg-view.js" defer></script>
-  <script src="app.js?v=5" defer></script>
+  <script src="llm.js?v=6" defer></script>
+  <script src="app.js?v=6" defer></script>
 </head>
 <body>
   <div class="shell">
@@ -57,6 +58,21 @@
           </section>
         </div>
         <aside class="side-column">
+          <section class="card llm-card" aria-labelledby="llm-heading">
+            <h2 id="llm-heading">本次测量解读 <small>AI · 可选</small></h2>
+            <p class="caption">启用后，仅把首个有效 30 秒窗口的心率、HRV 摘要及所选背景发给你配置的服务器；视频与原始波形留在手机。</p>
+            <label class="imu-switch"><input id="llm-enabled" type="checkbox"> 启用服务器解读</label>
+            <details class="llm-settings"><summary>连接与解读设置</summary>
+              <label class="field-label" for="llm-url">解读服务器 HTTPS 地址</label><input id="llm-url" type="url" placeholder="https://ppg.example.com" autocomplete="off" spellcheck="false">
+              <label class="field-label" for="llm-token">访问口令 · 仅保留在当前页面</label><input id="llm-token" type="password" autocomplete="off" spellcheck="false">
+              <label class="field-label" for="llm-prompt">解读方式</label><select id="llm-prompt"><option value="brief">简明状态</option><option value="quality">测量质量</option><option value="recovery">休息与恢复参考</option><option value="research">研究记录</option></select>
+              <label class="field-label" for="llm-context">本次测量背景 · 开始采集前选择</label><select id="llm-context"><option value="unknown">未提供</option><option value="seated">坐姿安静测量</option><option value="post_activity">活动后测量</option></select>
+            </details>
+            <p id="llm-status" class="caption" role="status" aria-live="polite"></p>
+            <div id="llm-output" class="llm-output" hidden></div>
+            <button id="llm-send" class="secondary" type="button" disabled>解读首个有效窗口 / 重试</button>
+            <p class="caption">每次采集自动解读一次，后续 HRV 每 5 秒照常更新。文字对应已发送窗口，不代表持续实时状态；30 秒 PPG 不能单独判断疾病、血压或压力等级。</p>
+          </section>
           <section class="card camera-card">
             <div class="card-heading"><h2>相机画面</h2><span id="camera-state">未开启</span></div>
             <div id="preview-box" class="preview-box">
@@ -87,7 +103,7 @@
         <p>心率为算法估计，尚未进行参考心率验证。时间戳记录浏览器帧回调时刻，不是硬件曝光时间。</p>
       </div></details>
     </main>
-    <footer><span>FingerPPG · 30 s HRV v5</span><span>本地处理 · 无视频上传 · 无补光</span></footer>
+    <footer><span>FingerPPG · HRV + AI v6</span><span>本地采集计算 · AI 解读可选 · 无补光</span></footer>
   </div>
   <noscript>本页面需要启用 JavaScript 才能采集和显示波形。</noscript>
 </body>
