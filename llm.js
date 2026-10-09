@@ -63,7 +63,7 @@
           const messages={403:'当前网页来源未获允许',422:'本次 HRV 数据未通过校验',
             429:'调用次数已达上限，请稍后再试',502:'AI 服务暂时不可用，可手动重试',503:'AI 服务暂时不可用',504:'AI 分析超时，可手动重试'};
           let code='';try {code=(await response.json()).error;} catch(_) {}
-          const error=new Error(code==='daily_limit'?'今日 10 次已用完，北京时间零点恢复':messages[response.status]||'AI 分析暂时不可用');
+          const error=new Error(code==='daily_limit'?'今日 30 次已用完，北京时间零点恢复':messages[response.status]||'AI 分析暂时不可用');
           error.dailyLimit=code==='daily_limit';throw error;
         }
         const answer=await response.json();if(generation!==this.generation) return;
@@ -137,7 +137,7 @@
     summary() {
       return {schema:'ppg-ai-summary-2',enabled:!!$('llm-enabled').checked,status:this.state,request_attempts:this.attempts,
         snapshot:this.snapshot||null,results:this.results,processing:'optional_cloudflare_deepseek_scalar_summary',
-        automatic_requests:'Once per camera session at the first valid 30 s HRV window; demo manual; no automatic retries',daily_limit:10};
+        automatic_requests:'Once per camera session at the first valid 30 s HRV window; demo manual; no automatic retries',daily_limit:30};
     }
   }
   window.FingerPPGInterpretation=Interpretation;

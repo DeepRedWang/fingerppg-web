@@ -7,11 +7,11 @@
   <meta name="description" content="用手机摄像头本地计算指尖波形、心率与 HRV，可选用自有服务器生成文字解读。">
   <title>指尖脉搏 · FingerPPG</title>
   <link rel="icon" href="icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="style.css?v=8-ai4">
+  <link rel="stylesheet" href="style.css?v=8-ai5">
   <script src="ppg-core.js?v=5" defer></script>
   <script src="ppg-view.js" defer></script>
-  <script src="llm.js?v=8-ai4" defer></script>
-  <script src="app.js?v=8-ai4" defer></script>
+  <script src="llm.js?v=8-ai5" defer></script>
+  <script src="app.js?v=8-ai5" defer></script>
 </head>
 <body>
   <div class="shell">
@@ -71,7 +71,7 @@
             <p id="llm-status" class="caption" role="status" aria-live="polite"></p>
             <div id="llm-output" class="llm-output" hidden></div>
             <button id="llm-send" class="secondary" type="button" hidden disabled>重试分析</button>
-            <p class="caption">无需访问口令。全站每天共享 10 次，北京时间零点重置。每次采集自动分析一次，失败不自动重试。报告可保存为图片；短时 PPG 指标仅供日常参考。</p>
+            <p class="caption">无需访问口令。全站每天共享 30 次，北京时间零点重置。每次采集自动分析一次，失败不自动重试。报告可保存为图片；短时 PPG 指标仅供日常参考。</p>
           </section>
           <section class="card camera-card">
             <div class="card-heading"><h2>相机画面</h2><span id="camera-state">未开启</span></div>
@@ -103,7 +103,7 @@
         <p>心率为算法估计，尚未进行参考心率验证。时间戳记录浏览器帧回调时刻，不是硬件曝光时间。</p>
       </div></details>
     </main>
-    <footer><span>FingerPPG · 30 秒 AI 报告 v8.3</span><span>本地采集计算 · AI 解读可选 · 无补光</span></footer>
+    <footer><span>FingerPPG · 30 秒 AI 报告 v8.4</span><span>本地采集计算 · AI 解读可选 · 无补光</span></footer>
   </div>
   <noscript>本页面需要启用 JavaScript 才能采集和显示波形。</noscript>
 </body>
