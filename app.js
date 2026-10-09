@@ -295,7 +295,7 @@
       this.cameraMuted = false; this.cameraStalled = false; this.latestRgb = null;
       this.mode = mode; this.origin = performance.now(); this.lastFrameWall = this.origin; this.receivedFrame = false;
       this.motion.reset(mode, this.origin, !!$('imu-enabled').checked);
-      this.metadata = {version: 6, build: 'hrv-llm-v6', mode, started_at: new Date().toISOString(), backend: null, video_uploaded: false,
+      this.metadata = {version: 8, build: 'ai-deepseek-v8', mode, started_at: new Date().toISOString(), backend: null, video_uploaded: false,
         hrv: {source:'PPG pulse-to-pulse intervals (PRV), not ECG RR/NN intervals',window_s:30,update_s:5,
           time_domain:'SDRR: sample standard deviation (N-1); RMSSD: RMS successive differences; pNN50: differences strictly greater than 50 ms / (N-1) * 100.',
           frequency_domain:'Exploratory 30 s only. Interval midpoints linearly interpolated at 4 Hz within observed bounds, linear detrend, periodic Hann periodogram, 512-point frequency grid, trapezoidal band integration. LF 0.04-0.15 Hz, HF 0.15-0.40 Hz. Zero padding does not improve true resolution.',
@@ -640,7 +640,7 @@
       const type = $('export-type').value;
       let content, extension, mime;
       const metadata = {...this.metadata, exported_at: new Date().toISOString(), imu: this.motion.summary(),
-          backend:this.interpretation.attempts ? 'self-hosted text interpretation gateway' : null,
+          backend:this.interpretation.attempts ? 'Cloudflare Worker / DeepSeek scalar-trend interpretation' : null,
           camera_interruptions: this.cameraInterruptions, page_interactions: this.pageEvents,
           frames_received: this.framesSeen, processed_frames: this.frames.length, application_skipped_frames: this.framesSkipped,
           missed_presented_frames: this.presentedMissed, waveform_rows: this.rows.length, hrv_latest:this.currentHrv,

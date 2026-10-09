@@ -10,8 +10,8 @@
   <link rel="stylesheet" href="style.css?v=6-header-actions">
   <script src="ppg-core.js?v=5" defer></script>
   <script src="ppg-view.js" defer></script>
-  <script src="llm.js?v=6" defer></script>
-  <script src="app.js?v=6" defer></script>
+  <script src="llm.js?v=8-ai1" defer></script>
+  <script src="app.js?v=8-ai1" defer></script>
 </head>
 <body>
   <div class="shell">
@@ -60,18 +60,23 @@
         <aside class="side-column">
           <section class="card llm-card" aria-labelledby="llm-heading">
             <h2 id="llm-heading">本次测量解读 <small>AI · 可选</small></h2>
-            <p class="caption">启用后，仅把首个有效 30 秒窗口的心率、HRV 摘要及所选背景发给你配置的服务器；视频与原始波形留在手机。</p>
-            <label class="imu-switch"><input id="llm-enabled" type="checkbox"> 启用服务器解读</label>
+            <p class="caption">手动发送本次心率、HRV 的连续窗口摘要及所选背景，经你的 Worker 交给 DeepSeek 分析变化并给出日常建议。视频与原始波形留在手机。</p>
+            <label class="imu-switch"><input id="llm-enabled" type="checkbox"> 启用 DeepSeek 解读</label>
             <details class="llm-settings"><summary>连接与解读设置</summary>
-              <label class="field-label" for="llm-url">解读服务器 HTTPS 地址</label><input id="llm-url" type="url" placeholder="https://ppg.example.com" autocomplete="off" spellcheck="false">
-              <label class="field-label" for="llm-token">访问口令 · 仅保留在当前页面</label><input id="llm-token" type="password" autocomplete="off" spellcheck="false">
-              <label class="field-label" for="llm-prompt">解读方式</label><select id="llm-prompt"><option value="brief">简明状态</option><option value="quality">测量质量</option><option value="recovery">休息与恢复参考</option><option value="research">研究记录</option></select>
+              <label class="field-label" for="llm-url">Worker HTTPS 地址</label><input id="llm-url" type="url" placeholder="https://fingerppg-ai.example.workers.dev" autocomplete="off" spellcheck="false">
+              <label class="field-label" for="llm-token">Worker 访问口令 · 请勿填写 DeepSeek API key</label><input id="llm-token" type="password" autocomplete="off" spellcheck="false">
+              <p class="caption">访问口令仅保留在当前页面，关闭 AI 后清除。</p>
+              <label class="field-label" for="llm-prompt">Prompt 对比 · 相同任务、不同表达</label><select id="llm-prompt"><option value="brief">A · 自然段</option><option value="structured">B · 固定结构</option><option value="evidence">C · 依据优先</option></select>
               <label class="field-label" for="llm-context">本次测量背景 · 开始采集前选择</label><select id="llm-context"><option value="unknown">未提供</option><option value="seated">坐姿安静测量</option><option value="post_activity">活动后测量</option></select>
             </details>
             <p id="llm-status" class="caption" role="status" aria-live="polite"></p>
+            <p id="llm-dataset" class="caption"></p>
             <div id="llm-output" class="llm-output" hidden></div>
-            <button id="llm-send" class="secondary" type="button" disabled>解读首个有效窗口 / 重试</button>
-            <p class="caption">每次采集自动解读一次，后续 HRV 每 5 秒照常更新。文字对应已发送窗口，不代表持续实时状态；30 秒 PPG 不能单独判断疾病、血压或压力等级。</p>
+            <button id="llm-send" class="secondary" type="button" disabled>固定当前数据并分析</button>
+            <button id="llm-refresh" class="secondary" type="button" disabled>使用最新数据（切换对比组）</button>
+            <button id="llm-export" class="secondary" type="button" disabled>导出 prompt 对比结果</button>
+            <details class="llm-settings"><summary>本次对比记录</summary><div id="llm-history" class="llm-output"></div></details>
+            <p class="caption">每次点击分析都会调用一次 DeepSeek 并可能产生费用，不会自动重试。同组数据保持不变，便于比较 prompt 稳定性；切换组保留结果，开始新采集会清空记录，请先导出。短时 PPG 指标不能单独判定疾病、压力或恢复程度。</p>
           </section>
           <section class="card camera-card">
             <div class="card-heading"><h2>相机画面</h2><span id="camera-state">未开启</span></div>
@@ -103,7 +108,7 @@
         <p>心率为算法估计，尚未进行参考心率验证。时间戳记录浏览器帧回调时刻，不是硬件曝光时间。</p>
       </div></details>
     </main>
-    <footer><span>FingerPPG · HRV + AI v6</span><span>本地采集计算 · AI 解读可选 · 无补光</span></footer>
+    <footer><span>FingerPPG · DeepSeek AI v8</span><span>本地采集计算 · AI 解读可选 · 无补光</span></footer>
   </div>
   <noscript>本页面需要启用 JavaScript 才能采集和显示波形。</noscript>
 </body>
