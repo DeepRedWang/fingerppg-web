@@ -7,11 +7,11 @@
   <meta name="description" content="用手机摄像头本地计算指尖波形、心率与 HRV，可选用自有服务器生成文字解读。">
   <title>指尖脉搏 · FingerPPG</title>
   <link rel="icon" href="icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="style.css?v=8-ai3">
+  <link rel="stylesheet" href="style.css?v=8-ai4">
   <script src="ppg-core.js?v=5" defer></script>
   <script src="ppg-view.js" defer></script>
-  <script src="llm.js?v=8-ai3" defer></script>
-  <script src="app.js?v=8-ai3" defer></script>
+  <script src="llm.js?v=8-ai4" defer></script>
+  <script src="app.js?v=8-ai4" defer></script>
 </head>
 <body>
   <div class="shell">
@@ -24,7 +24,7 @@
           <div class="capture-actions"><button id="start" class="primary" type="button">开始采集</button><button id="focus" class="secondary focus-button" type="button" disabled>固定采集画面</button></div>
           <button id="demo" type="button" hidden>体验 72 bpm 演示</button>
           <label class="field-label" for="capture-fps">相机目标帧率</label><select id="capture-fps"><option value="60">60 Hz · 原采集设置</option><option value="30">30 Hz · 减轻采集负载</option></select>
-          <p class="action-note" id="action-note">开始时申请相机与运动权限，可在下方关闭 IMU。开始采集后可固定画面。</p>
+          <p class="action-note" id="action-note">开始时申请相机与运动权限。AI 默认开启，30 秒 HRV 就绪后发送指标摘要给 DeepSeek；可在下方关闭 AI 或 IMU。</p>
           <section class="card heart-card" aria-labelledby="heart-heading">
             <div><h2 id="heart-heading">心率估计</h2><div class="reading"><span id="bpm">—</span><span class="unit">bpm</span></div><p id="status" role="status" aria-live="polite">点击开始，采集指尖信号</p></div>
             <div class="heart-aside"><span id="mode-pill" class="mode-pill">准备就绪</span><div class="pulse-mark" aria-hidden="true">⌁</div><span class="subtle">每秒更新 · 最近 8 秒</span></div>
@@ -66,8 +66,8 @@
         <aside class="side-column">
           <section class="card llm-card" aria-labelledby="llm-heading">
             <h2 id="llm-heading">本次测量解读 <small>AI · 可选</small></h2>
-            <p class="caption">首个有效 30 秒 HRV 结果出来后，自动分析本次心率和 HRV，给出日常建议。只发送指标摘要给 DeepSeek。</p>
-            <label class="imu-switch"><input id="llm-enabled" type="checkbox"> 启用自动 AI 分析</label>
+            <p class="caption">AI 默认开启，首个有效 30 秒 HRV 出来后自动分析心率、SDRR、RMSSD、pNN50 和 LF/HF。只发送指标摘要给 DeepSeek，可随时关闭。</p>
+            <label class="imu-switch"><input id="llm-enabled" type="checkbox" checked> 启用自动 AI 分析</label>
             <p id="llm-status" class="caption" role="status" aria-live="polite"></p>
             <div id="llm-output" class="llm-output" hidden></div>
             <button id="llm-send" class="secondary" type="button" hidden disabled>重试分析</button>
@@ -103,7 +103,7 @@
         <p>心率为算法估计，尚未进行参考心率验证。时间戳记录浏览器帧回调时刻，不是硬件曝光时间。</p>
       </div></details>
     </main>
-    <footer><span>FingerPPG · 30 秒 AI 报告 v8.2</span><span>本地采集计算 · AI 解读可选 · 无补光</span></footer>
+    <footer><span>FingerPPG · 30 秒 AI 报告 v8.3</span><span>本地采集计算 · AI 解读可选 · 无补光</span></footer>
   </div>
   <noscript>本页面需要启用 JavaScript 才能采集和显示波形。</noscript>
 </body>

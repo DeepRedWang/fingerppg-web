@@ -6,8 +6,8 @@
   class Interpretation {
     constructor(onChange) {
       this.onChange=onChange;this.generation=0;this.results=[];this.state='idle';this.attempts=0;this.autoAttempted=false;
-      this.message='启用后，首个有效 30 秒 HRV 结果出来就自动分析。';
-      $('llm-enabled').checked=false;
+      this.message='AI 已默认开启，首个有效 30 秒 HRV 结果出来就自动分析。';
+      $('llm-enabled').checked=true;
       $('llm-send').addEventListener('click',()=>this.send());
       $('report-save')?.addEventListener('click',()=>this.saveReport());
       $('llm-enabled').addEventListener('change',()=>{
@@ -33,9 +33,13 @@
           !['time_s','interval_count','interval_span_s','mean_ppi_ms','sdrr_ms','rmssd_ms','pnn50_pct'].every(k=>Number.isFinite(hrv[k]))||
           hrv.mean_ppi_ms<300||hrv.mean_ppi_ms>1500||hrv.time_s<30||hrv.time_s>301) return;
       // Same 30 s window for HR and PRV, with no raw intervals, images, IMU or device identifiers.
-      this.snapshot={schema:'ppg-trends-1',source:'phone_ppg',mode:this.mode,context:'unknown',windows:[{
+      const ratio=hrv.lf_hf_status==='exploratory_30s'&&Number.isFinite(hrv.lf_hf_ratio)&&hrv.lf_hf_ratio>=0&&hrv.lf_hf_ratio<=1e12?hrv.lf_hf_ratio:null;
+      const spectralStatus=ratio!==null?'exploratory_30s':
+        ['low_variance','insufficient_hf','insufficient_data'].includes(hrv.lf_hf_status)?hrv.lf_hf_status:'insufficient_data';
+      this.snapshot={schema:'ppg-trends-2',source:'phone_ppg',mode:this.mode,context:'unknown',windows:[{
         window_s:30,window_end_s:hrv.time_s,interval_count:hrv.interval_count,interval_span_s:hrv.interval_span_s,
-        mean_ppi_ms:hrv.mean_ppi_ms,sdrr_ms:hrv.sdrr_ms,rmssd_ms:hrv.rmssd_ms,pnn50_pct:hrv.pnn50_pct}]};
+        mean_ppi_ms:hrv.mean_ppi_ms,sdrr_ms:hrv.sdrr_ms,rmssd_ms:hrv.rmssd_ms,pnn50_pct:hrv.pnn50_pct,
+        lf_hf_ratio:ratio,lf_hf_status:spectralStatus}]};
       this.measuredAt=new Date().toISOString();this.message='30 秒 HRV 已就绪，报告数据已保存。';
       this.render();this.maybeAuto();
     }
@@ -82,8 +86,8 @@
       const w=this.snapshot?.windows[0];
       return w?[`平均心率 ${(60000/w.mean_ppi_ms).toFixed(1)} bpm`,
         `SDRR ${w.sdrr_ms.toFixed(1)} ms  ·  RMSSD ${w.rmssd_ms.toFixed(1)} ms`,
-        `pNN50 ${w.pnn50_pct.toFixed(1)}%  ·  30 秒窗口`,
-        `采集第 ${(w.window_end_s-30).toFixed(1)}–${w.window_end_s.toFixed(1)} 秒`]:[];
+        `pNN50 ${w.pnn50_pct.toFixed(1)}%  ·  LF/HF ${w.lf_hf_ratio===null?'—':w.lf_hf_ratio.toFixed(2)}`,
+        `30 秒窗口 · 采集第 ${(w.window_end_s-30).toFixed(1)}–${w.window_end_s.toFixed(1)} 秒`]:[];
     }
     render() {
       $('llm-status').textContent=this.message;
