@@ -198,7 +198,7 @@
       this.hrvRows = []; this.currentHrv = null;
       this.interpretation = new window.FingerPPGInterpretation(() => {
         if (this.focusMode) $('action-note').textContent = this.interpretation?.state === 'done' ?
-          'AI 解读已完成 · 停止后查看文字结果' : this.interpretation?.state === 'loading' ?
+          'AI 分析完成 · 下方查看报告或保存图片' : this.interpretation?.state === 'loading' ?
           'AI 正在解读 · 采集继续' : '画面已固定 · 停止后可下载完整数据';
       });
       this.actionNote = $('action-note').textContent;
@@ -212,7 +212,7 @@
       $('demo').addEventListener('click', () => this.startDemo());
       $('export').addEventListener('click', () => this.exportData());
       $('focus').addEventListener('click', () => this.setFocus(!this.focusMode));
-      this.preventPagePan = event => { if (event.cancelable) event.preventDefault(); };
+      this.preventPagePan = event => { if (event.cancelable && !event.target?.closest?.('.report-text')) event.preventDefault(); };
       this.lastScrollLogged = -Infinity;
       window.addEventListener('scroll', event => {
         if (!this.running || performance.now()-this.lastScrollLogged < 100) return;

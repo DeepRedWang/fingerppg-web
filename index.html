@@ -7,11 +7,11 @@
   <meta name="description" content="用手机摄像头本地计算指尖波形、心率与 HRV，可选用自有服务器生成文字解读。">
   <title>指尖脉搏 · FingerPPG</title>
   <link rel="icon" href="icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="style.css?v=6-header-actions">
+  <link rel="stylesheet" href="style.css?v=8-ai2">
   <script src="ppg-core.js?v=5" defer></script>
   <script src="ppg-view.js" defer></script>
-  <script src="llm.js?v=8-ai1" defer></script>
-  <script src="app.js?v=8-ai1" defer></script>
+  <script src="llm.js?v=8-ai2" defer></script>
+  <script src="app.js?v=8-ai2" defer></script>
 </head>
 <body>
   <div class="shell">
@@ -44,6 +44,12 @@
             <canvas id="wave" aria-label="最近十秒的 primary 脉搏波形"></canvas>
             <div class="stats"><div><span>实际到帧率</span><strong id="fps">—</strong><small>Hz</small></div><div><span>采集时长</span><strong id="elapsed">0.0</strong><small>s</small></div><div><span>红通道均值</span><strong id="red">—</strong></div></div>
           </section>
+          <section id="capture-report" class="card capture-report-card" aria-labelledby="report-heading">
+            <div class="report-heading"><h2 id="report-heading">本次测量报告</h2><span id="report-status">等待 30 秒 HRV</span><button id="report-save" class="secondary" type="button" disabled>保存报告图</button></div>
+            <p id="report-window" class="report-window">本次心率与 HRV 报告</p>
+            <div id="report-metrics" class="report-metrics"></div>
+            <div id="report-text" class="report-text" aria-live="polite">30 秒 HRV 就绪后显示报告。</div>
+          </section>
           <section class="card imu-card" aria-labelledby="imu-heading">
             <div class="card-heading"><h2 id="imu-heading">三轴加速度</h2><span id="imu-mode">等待采集</span></div>
             <label class="imu-switch"><input id="imu-enabled" type="checkbox" checked> 同时采集三轴加速度</label>
@@ -60,23 +66,16 @@
         <aside class="side-column">
           <section class="card llm-card" aria-labelledby="llm-heading">
             <h2 id="llm-heading">本次测量解读 <small>AI · 可选</small></h2>
-            <p class="caption">手动发送本次心率、HRV 的连续窗口摘要及所选背景，经你的 Worker 交给 DeepSeek 分析变化并给出日常建议。视频与原始波形留在手机。</p>
-            <label class="imu-switch"><input id="llm-enabled" type="checkbox"> 启用 DeepSeek 解读</label>
-            <details class="llm-settings"><summary>连接与解读设置</summary>
-              <label class="field-label" for="llm-url">Worker HTTPS 地址</label><input id="llm-url" type="url" placeholder="https://fingerppg-ai.example.workers.dev" autocomplete="off" spellcheck="false">
-              <label class="field-label" for="llm-token">Worker 访问口令 · 请勿填写 DeepSeek API key</label><input id="llm-token" type="password" autocomplete="off" spellcheck="false">
-              <p class="caption">访问口令仅保留在当前页面，关闭 AI 后清除。</p>
-              <label class="field-label" for="llm-prompt">Prompt 对比 · 相同任务、不同表达</label><select id="llm-prompt"><option value="brief">A · 自然段</option><option value="structured">B · 固定结构</option><option value="evidence">C · 依据优先</option></select>
-              <label class="field-label" for="llm-context">本次测量背景 · 开始采集前选择</label><select id="llm-context"><option value="unknown">未提供</option><option value="seated">坐姿安静测量</option><option value="post_activity">活动后测量</option></select>
+            <p class="caption">首个有效 30 秒 HRV 结果出来后，自动分析本次心率和 HRV，给出日常建议。只发送指标摘要给 DeepSeek。</p>
+            <label class="imu-switch"><input id="llm-enabled" type="checkbox"> 启用自动 AI 分析</label>
+            <details class="llm-settings"><summary>访问设置</summary>
+              <label class="field-label" for="llm-token">访问口令</label><input id="llm-token" type="password" autocomplete="off" spellcheck="false">
+              <p class="caption">填写独立访问口令，不是 DeepSeek API key。口令仅保留在当前页面。</p>
             </details>
             <p id="llm-status" class="caption" role="status" aria-live="polite"></p>
-            <p id="llm-dataset" class="caption"></p>
             <div id="llm-output" class="llm-output" hidden></div>
-            <button id="llm-send" class="secondary" type="button" disabled>固定当前数据并分析</button>
-            <button id="llm-refresh" class="secondary" type="button" disabled>使用最新数据（切换对比组）</button>
-            <button id="llm-export" class="secondary" type="button" disabled>导出 prompt 对比结果</button>
-            <details class="llm-settings"><summary>本次对比记录</summary><div id="llm-history" class="llm-output"></div></details>
-            <p class="caption">每次点击分析都会调用一次 DeepSeek 并可能产生费用，不会自动重试。同组数据保持不变，便于比较 prompt 稳定性；切换组保留结果，开始新采集会清空记录，请先导出。短时 PPG 指标不能单独判定疾病、压力或恢复程度。</p>
+            <button id="llm-send" class="secondary" type="button" hidden disabled>重试分析</button>
+            <p class="caption">每天最多 10 次，北京时间零点重置。每次采集自动分析一次，失败不自动重试。报告可保存为图片；短时 PPG 指标仅供日常参考。</p>
           </section>
           <section class="card camera-card">
             <div class="card-heading"><h2>相机画面</h2><span id="camera-state">未开启</span></div>
@@ -108,7 +107,7 @@
         <p>心率为算法估计，尚未进行参考心率验证。时间戳记录浏览器帧回调时刻，不是硬件曝光时间。</p>
       </div></details>
     </main>
-    <footer><span>FingerPPG · DeepSeek AI v8</span><span>本地采集计算 · AI 解读可选 · 无补光</span></footer>
+    <footer><span>FingerPPG · 30 秒 AI 报告 v8.1</span><span>本地采集计算 · AI 解读可选 · 无补光</span></footer>
   </div>
   <noscript>本页面需要启用 JavaScript 才能采集和显示波形。</noscript>
 </body>

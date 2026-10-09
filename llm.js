@@ -1,143 +1,149 @@
-/* Optional scalar-trend interpretation. Provider key and prompts stay in the Worker. */
+/* One automatic interpretation per valid 30 s measurement; credentials stay out of reports. */
 (function () {
   'use strict';
-  const $ = id => document.getElementById(id);
-  const PROMPTS = {brief:'A · 自然段',structured:'B · 固定结构',evidence:'C · 依据优先'};
+  const $=id=>document.getElementById(id);
+  const API='https://fingerppg-ai.fingerppg-ai-worker.workers.dev';
   class Interpretation {
     constructor(onChange) {
-      this.onChange=onChange;this.generation=0;this.results=[];this.windows=[];this.state='idle';this.attempts=0;this.group=0;
-      this.message='采集后手动分析心率与 HRV 变化；选择不同 prompt 或重复运行，比较同一份数据。';
-      try {
-        const saved=JSON.parse(window.localStorage.getItem('fingerppg.llm.v2')||'{}');
-        $('llm-url').value=saved.url||'https://fingerppg-ai.fingerppg-ai-worker.workers.dev';$('llm-prompt').value=Object.hasOwn(PROMPTS,saved.prompt)?saved.prompt:'brief';
-      } catch(_) {}
+      this.onChange=onChange;this.generation=0;this.results=[];this.state='idle';this.attempts=0;this.autoAttempted=false;
+      this.message='启用后，首个有效 30 秒 HRV 结果出来就自动分析。';
       $('llm-enabled').checked=false;
       $('llm-send').addEventListener('click',()=>this.send());
-      $('llm-refresh').addEventListener('click',()=>this.useLatest());
-      $('llm-export').addEventListener('click',()=>this.exportComparison());
+      $('report-save')?.addEventListener('click',()=>this.saveReport());
+      $('llm-token').addEventListener('change',()=>this.maybeAuto());
       $('llm-enabled').addEventListener('change',()=>{
-        if(!$('llm-enabled').checked) {this.cancel('已关闭 AI 解读');$('llm-token').value='';}
+        if(!$('llm-enabled').checked) {this.cancel('已关闭 AI 分析');$('llm-token').value='';}
+        else this.maybeAuto();
         this.render();
       });
       this.render();
     }
     cancel(message) {
-      ++this.generation;
-      if(this.controller) this.controller.abort();
-      this.controller=null;
-      if(this.state==='loading') {this.state='cancelled';this.message=message+'；已发出的请求可能仍会计费';}
+      ++this.generation;if(this.controller) this.controller.abort();this.controller=null;
+      if(this.state==='loading') {this.state='cancelled';this.message=message+'；已发出的请求可能仍占用次数';}
       this.render();
     }
     reset(mode) {
-      this.cancel('上一会话的解读已取消');this.mode=mode;
-      this.windows=[];this.snapshot=null;this.result=null;this.results=[];this.attempts=0;this.group=0;
-      this.context=$('llm-context').value||'unknown';this.state='waiting';
-      this.message='等待有效的 30 秒 HRV 窗口；数据仅在点击分析时上传。';this.render();
+      this.cancel('上一会话的分析已取消');this.mode=mode;this.snapshot=null;this.result=null;this.results=[];
+      this.attempts=0;this.autoAttempted=false;this.state='waiting';
+      this.message='等待首个有效 30 秒 HRV 结果…';this.render();
     }
     consider(hrv) {
-      if(hrv?.status!=='tracking'||hrv.window_s!==30||hrv.interval_count<15||hrv.interval_span_s<26||
+      if(this.snapshot||hrv?.status!=='tracking'||hrv.window_s!==30||hrv.interval_count<15||hrv.interval_span_s<26||
           hrv.rejected_interval_count>0||
           !['time_s','interval_count','interval_span_s','mean_ppi_ms','sdrr_ms','rmssd_ms','pnn50_pct'].every(k=>Number.isFinite(hrv[k]))||
-          hrv.mean_ppi_ms<300||hrv.mean_ppi_ms>1500||hrv.time_s<30||hrv.time_s>301||
-          hrv.time_s-(this.windows.at(-1)?.window_end_s??-Infinity)<4) return;
-      // Explicit scalar allowlist; neither raw PPI/IMU nor device identifiers are uploaded.
-      this.windows.push({window_s:30,window_end_s:hrv.time_s,interval_count:hrv.interval_count,
-        interval_span_s:hrv.interval_span_s,mean_ppi_ms:hrv.mean_ppi_ms,sdrr_ms:hrv.sdrr_ms,
-        rmssd_ms:hrv.rmssd_ms,pnn50_pct:hrv.pnn50_pct});
-      if(this.windows.length>55) this.windows.shift();
-      if(!this.snapshot && this.state!=='loading') this.message=`已有 ${this.windows.length} 个有效窗口，可手动分析${this.windows.length===1?'；单个窗口还不能判断变化':''}。`;
-      this.render();
+          hrv.mean_ppi_ms<300||hrv.mean_ppi_ms>1500||hrv.time_s<30||hrv.time_s>301) return;
+      // Same 30 s window for HR and PRV, with no raw intervals, images, IMU or device identifiers.
+      this.snapshot={schema:'ppg-trends-1',source:'phone_ppg',mode:this.mode,context:'unknown',windows:[{
+        window_s:30,window_end_s:hrv.time_s,interval_count:hrv.interval_count,interval_span_s:hrv.interval_span_s,
+        mean_ppi_ms:hrv.mean_ppi_ms,sdrr_ms:hrv.sdrr_ms,rmssd_ms:hrv.rmssd_ms,pnn50_pct:hrv.pnn50_pct}]};
+      this.measuredAt=new Date().toISOString();this.message='30 秒 HRV 已就绪，报告数据已保存。';
+      this.render();this.maybeAuto();
     }
-    useLatest() {
-      if(this.state==='loading'||!this.windows.length) return;
-      this.snapshot=null;this.snapshotHash=null;this.result=null;this.state='ready';
-      this.message='下次分析将固定最新数据，建立新的对比组；已有结果保留在导出文件中。';this.render();
+    maybeAuto() {
+      if(this.mode==='camera'&&this.snapshot&&$('llm-enabled').checked&&!this.autoAttempted&&this.state!=='loading') this.send();
     }
     settings() {
-      const raw=$('llm-url').value.trim(),key=$('llm-token').value.trim();let url;
-      try {url=new URL(raw);} catch(_) {throw new Error('请填写 Worker 的完整 HTTPS 地址');}
-      const local=['localhost','127.0.0.1','[::1]'];
-      const localTest=local.includes(window.location?.hostname)&&local.includes(url.hostname);
-      if((url.protocol!=='https:'&&!(url.protocol==='http:'&&localTest))||url.username||url.password||url.search||url.hash||url.pathname!=='/')
-        throw new Error('请填写 HTTPS 服务地址，不含路径、查询参数或密钥');
-      if(/^sk-/i.test(key)) throw new Error('这里填写独立的 Worker 访问口令，请勿填写 DeepSeek API key');
-      if(key.length<32||key.length>200) throw new Error('请填写 Worker 的独立访问口令（仅留在当前页面）');
-      const prompt=$('llm-prompt').value;
-      if(!Object.hasOwn(PROMPTS,prompt)) throw new Error('请选择 prompt');
-      try {window.localStorage.setItem('fingerppg.llm.v2',JSON.stringify({url:url.origin,prompt}));} catch(_) {}
-      return {url:url.origin,key,prompt};
+      const key=$('llm-token').value.trim();
+      if(/^sk-/i.test(key)) throw new Error('这里填写独立访问口令，不是 DeepSeek API key');
+      if(key.length<32||key.length>200) throw new Error('请在“访问设置”中填写口令，填好后会自动分析');
+      return {key};
     }
     async send() {
-      if(!this.windows.length||this.state==='loading'||!$('llm-enabled').checked) return;
-      if(this.results.length>=30) {this.message='已保留 30 次结果，请先导出；开始新采集会清空当前对比。';this.render();return;}
+      if(!this.snapshot||this.state==='loading'||this.state==='done'||this.state==='quota'||!$('llm-enabled').checked) return;
       let config;
       try {config=this.settings();}
-      catch(error) {this.state='error';this.message=error.message;this.render();return;}
-      if(!this.snapshot) {
-        this.snapshot={schema:'ppg-trends-1',source:'phone_ppg',mode:this.mode,context:this.context,
-          windows:this.windows.map(w=>({...w}))};this.snapshotHash=null;++this.group;
-      }
+      catch(error) {this.state='credentials';this.message=error.message;this.render();return;}
+      this.autoAttempted=true;
       const generation=++this.generation,controller=new AbortController();
       this.controller=controller;this.state='loading';this.result=null;
-      this.message=`正在用 ${PROMPTS[config.prompt]} 分析第 ${this.group} 组数据…`;this.render();
+      this.message='正在分析心率和 HRV，采集继续…';this.render();
       const timer=setTimeout(()=>controller.abort(),70000);
       try {
-        // Each explicit click is a NEW paid inference, including repeated prompts. Never auto-retry.
-        const payload={request_id:window.crypto.randomUUID(),prompt_id:config.prompt,measurement:this.snapshot};
+        const payload={request_id:window.crypto.randomUUID(),prompt_id:'summary',measurement:this.snapshot};
         this.attempts++;
-        const response=await window.fetch(config.url+'/api/interpret',{
+        const response=await window.fetch(API+'/api/interpret',{
           method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+config.key},
           body:JSON.stringify(payload),signal:controller.signal,cache:'no-store',credentials:'omit',redirect:'error',referrerPolicy:'no-referrer'});
         if(!response.ok) {
-          const messages={401:'访问口令不正确',403:'Worker 未允许当前网页来源',413:'数据过大',422:'数据格式或 HRV 数值不一致',
-            429:'已达到每分钟或每日调用上限，请稍后再试',502:'DeepSeek 暂时不可用，请检查 Worker 配置或账户额度',503:'Worker 尚未配置完成',504:'DeepSeek 分析超时'};
-          throw new Error(messages[response.status]||`服务返回错误 ${response.status}`);
+          const messages={401:'访问口令不正确，请修改后重试',403:'当前网页来源未获允许',422:'本次 HRV 数据未通过校验',
+            429:'调用次数已达上限，请稍后再试',502:'AI 服务暂时不可用，可手动重试',503:'AI 服务暂时不可用',504:'AI 分析超时，可手动重试'};
+          let code='';try {code=(await response.json()).error;} catch(_) {}
+          const error=new Error(code==='daily_limit'?'今日 10 次已用完，北京时间零点恢复':messages[response.status]||'AI 分析暂时不可用');
+          error.dailyLimit=code==='daily_limit';throw error;
         }
         const answer=await response.json();if(generation!==this.generation) return;
         if(typeof answer.text!=='string'||!answer.text.trim()||answer.text.length>4000||
             answer.request_id!==payload.request_id||answer.prompt_id!==payload.prompt_id||
-            answer.window_end_s!==this.snapshot.windows.at(-1).window_end_s||
-            !/^[0-9a-f]{64}$/.test(answer.snapshot_hash)||
-            (this.snapshotHash && this.snapshotHash!==answer.snapshot_hash)) throw new Error('返回结果与本次固定数据不匹配');
-        this.snapshotHash=answer.snapshot_hash;
-        this.result={request_id:answer.request_id,group:this.group,prompt_id:answer.prompt_id,
-          prompt_version:String(answer.prompt_version||'').slice(0,80),model:String(answer.model||'').slice(0,120),
-          provider_model:String(answer.provider_model||'').slice(0,120),snapshot_hash:answer.snapshot_hash,
-          settings:{temperature:answer.settings?.temperature,max_tokens:answer.settings?.max_tokens,thinking:answer.settings?.thinking?.type},
-          usage:{prompt_tokens:answer.usage?.prompt_tokens,completion_tokens:answer.usage?.completion_tokens,total_tokens:answer.usage?.total_tokens},
-          measurement:this.snapshot,created_at:new Date().toISOString(),text:answer.text,truncated:!!answer.truncated};
+            answer.window_end_s!==this.snapshot.windows[0].window_end_s||!/^[0-9a-f]{64}$/.test(answer.snapshot_hash))
+          throw new Error('返回结果与本次测量不匹配');
+        this.result={request_id:answer.request_id,prompt_id:answer.prompt_id,prompt_version:String(answer.prompt_version||'').slice(0,80),
+          model:String(answer.model||'').slice(0,120),snapshot_hash:answer.snapshot_hash,measurement:this.snapshot,
+          created_at:new Date().toISOString(),text:answer.text,truncated:!!answer.truncated};
         this.results.push(this.result);this.state='done';
-        this.message=`第 ${this.group} 组 · ${PROMPTS[config.prompt]} 完成；可换 prompt 或重复运行${answer.truncated?'（本次输出被截断）':''}。`;
+        this.message=answer.truncated?'分析完成，文字可能未完整生成':'分析完成，本次采集不再重复调用。';
       } catch(error) {
         if(generation!==this.generation) return;
-        this.state='error';this.message=error.name==='AbortError'?'请求超时；已发出的请求可能仍会计费，不会自动重试':
-          error instanceof TypeError?'无法连接 Worker，请检查 HTTPS、网络和来源配置':error.message;
+        this.state=error.dailyLimit?'quota':'error';this.message=error.name==='AbortError'?'分析超时；不会自动重试，已发出的请求可能仍占用次数':
+          error instanceof TypeError?'AI 暂时连接不上，采集和报告数据不受影响':error.message;
       } finally {clearTimeout(timer);if(generation===this.generation) {this.controller=null;this.render();}}
     }
-    exportComparison() {
-      if(!this.results.length) return;
-      const url=URL.createObjectURL(new Blob([JSON.stringify(this.summary(),null,2)],{type:'application/json'}));
-      const a=document.createElement('a');a.href=url;a.download='fingerppg_ai_comparison_'+new Date().toISOString().replace(/[:.]/g,'-')+'.json';
-      document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
+    reportLines() {
+      const w=this.snapshot?.windows[0];
+      return w?[`平均心率 ${(60000/w.mean_ppi_ms).toFixed(1)} bpm`,
+        `SDRR ${w.sdrr_ms.toFixed(1)} ms  ·  RMSSD ${w.rmssd_ms.toFixed(1)} ms`,
+        `pNN50 ${w.pnn50_pct.toFixed(1)}%  ·  30 秒窗口`,
+        `采集第 ${(w.window_end_s-30).toFixed(1)}–${w.window_end_s.toFixed(1)} 秒`]:[];
     }
     render() {
       $('llm-status').textContent=this.message;
       $('llm-output').textContent=this.result?.text||'';$('llm-output').hidden=!this.result;
-      const busy=this.state==='loading';
-      $('llm-send').disabled=!this.windows.length||busy||!$('llm-enabled').checked;
-      $('llm-send').textContent=this.snapshot?'用所选 prompt 再运行一次':'固定当前数据并分析';
-      $('llm-refresh').disabled=!this.snapshot||busy;
-      $('llm-export').disabled=!this.results.length;
-      const rows=this.snapshot?.windows||this.windows;
-      $('llm-dataset').textContent=rows.length?`${this.snapshot?'已固定第 '+this.group+' 组':'待固定数据'}：${Math.max(0,rows[0].window_end_s-30).toFixed(1)}–${rows.at(-1).window_end_s.toFixed(1)} s，${rows.length} 个窗口。${this.snapshot?' 新窗口不会改变本组输入。':''}`:'尚无有效窗口';
-      $('llm-history').textContent=this.results.map((r,i)=>`${i+1}. 第 ${r.group} 组 · ${PROMPTS[r.prompt_id]} · ${r.model}${r.truncated?' · 截断':''}`).join('\n');
+      $('llm-send').hidden=!['error','cancelled','credentials'].includes(this.state)&&!(this.mode==='demo'&&this.snapshot&&this.state!=='done');
+      $('llm-send').disabled=!this.snapshot||this.state==='loading'||!$('llm-enabled').checked;
+      $('llm-send').textContent=this.attempts?'重试分析':'开始分析';
+      if($('report-status')) {
+        $('capture-report')?.classList?.toggle('has-report',!!this.snapshot);
+        $('report-status').textContent=this.mode==='demo'?'合成演示':this.result?'分析完成':this.snapshot?'数据已就绪':'等待 30 秒 HRV';
+        $('report-metrics').textContent=this.reportLines().slice(0,3).join('\n');
+        $('report-window').textContent=this.snapshot?this.reportLines()[3]:'本次心率与 HRV 报告';
+        $('report-text').textContent=this.result?.text||(!$('llm-enabled').checked?'启用 AI 后，HRV 就绪即可分析。':this.message);
+        $('report-save').disabled=!this.snapshot;
+      }
       this.onChange?.();
     }
+    saveReport() {
+      if(!this.snapshot) return;
+      const canvas=document.createElement('canvas'),ctx=canvas.getContext('2d');
+      const width=900,pad=54,lineHeight=42,maxWidth=width-pad*2;
+      ctx.font='28px sans-serif';
+      const wrap=text=>{
+        const lines=[];for(const paragraph of text.split('\n')) {
+          if(!paragraph) {lines.push('');continue;}
+          let line='';for(const character of paragraph) {
+            if(line&&ctx.measureText(line+character).width>maxWidth) {lines.push(line);line='';}line+=character;
+          }lines.push(line);
+        }return lines;
+      };
+      const text=this.result?.text||'AI 分析尚未完成。以下仅为测量数据记录。';
+      const lines=[...this.reportLines(),'',...wrap(text),'','短时 PPG 指标，仅供日常参考。'];
+      canvas.width=width;canvas.height=220+lines.length*lineHeight+pad;
+      ctx.fillStyle='#0b1b2c';ctx.fillRect(0,0,canvas.width,canvas.height);
+      ctx.fillStyle='#83e9ca';ctx.font='bold 40px sans-serif';ctx.fillText('FingerPPG · 心率与 HRV 报告',pad,76);
+      ctx.fillStyle='#b9ccd9';ctx.font='24px sans-serif';
+      ctx.fillText((this.mode==='demo'?'合成演示 · ':'')+new Date(this.measuredAt).toLocaleString(),pad,122);
+      ctx.font='28px sans-serif';ctx.fillStyle='#e8f0f4';
+      lines.forEach((line,i)=>ctx.fillText(line,pad,190+i*lineHeight));
+      canvas.toBlob(blob=>{
+        if(!blob) return;
+        const url=URL.createObjectURL(blob),a=document.createElement('a');
+        a.href=url;a.download='FingerPPG_report_'+this.measuredAt.replace(/[:.]/g,'-')+'.png';
+        document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
+      },'image/png');
+    }
     summary() {
-      return {schema:'ppg-ai-comparison-1',enabled:!!$('llm-enabled').checked,status:this.state,request_attempts:this.attempts,
-        snapshot:this.snapshot||null,results:this.results,processing:'optional_cloudflare_deepseek_scalar_trends',
-        automatic_requests:'none; every explicit run is a new inference; no automatic retries',
-        comparison_note:'Compare runs within the same group and snapshot_hash; record prompt_version, model and settings. Overlapping windows are not independent measurements.'};
+      return {schema:'ppg-ai-summary-2',enabled:!!$('llm-enabled').checked,status:this.state,request_attempts:this.attempts,
+        snapshot:this.snapshot||null,results:this.results,processing:'optional_cloudflare_deepseek_scalar_summary',
+        automatic_requests:'Once per camera session at the first valid 30 s HRV window; demo manual; no automatic retries',daily_limit:10};
     }
   }
   window.FingerPPGInterpretation=Interpretation;
