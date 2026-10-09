@@ -10,9 +10,8 @@
       $('llm-enabled').checked=false;
       $('llm-send').addEventListener('click',()=>this.send());
       $('report-save')?.addEventListener('click',()=>this.saveReport());
-      $('llm-token').addEventListener('change',()=>this.maybeAuto());
       $('llm-enabled').addEventListener('change',()=>{
-        if(!$('llm-enabled').checked) {this.cancel('已关闭 AI 分析');$('llm-token').value='';}
+        if(!$('llm-enabled').checked) this.cancel('已关闭 AI 分析');
         else this.maybeAuto();
         this.render();
       });
@@ -43,17 +42,8 @@
     maybeAuto() {
       if(this.mode==='camera'&&this.snapshot&&$('llm-enabled').checked&&!this.autoAttempted&&this.state!=='loading') this.send();
     }
-    settings() {
-      const key=$('llm-token').value.trim();
-      if(/^sk-/i.test(key)) throw new Error('这里填写独立访问口令，不是 DeepSeek API key');
-      if(key.length<32||key.length>200) throw new Error('请在“访问设置”中填写口令，填好后会自动分析');
-      return {key};
-    }
     async send() {
       if(!this.snapshot||this.state==='loading'||this.state==='done'||this.state==='quota'||!$('llm-enabled').checked) return;
-      let config;
-      try {config=this.settings();}
-      catch(error) {this.state='credentials';this.message=error.message;this.render();return;}
       this.autoAttempted=true;
       const generation=++this.generation,controller=new AbortController();
       this.controller=controller;this.state='loading';this.result=null;
@@ -63,10 +53,10 @@
         const payload={request_id:window.crypto.randomUUID(),prompt_id:'summary',measurement:this.snapshot};
         this.attempts++;
         const response=await window.fetch(API+'/api/interpret',{
-          method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+config.key},
+          method:'POST',headers:{'Content-Type':'application/json'},
           body:JSON.stringify(payload),signal:controller.signal,cache:'no-store',credentials:'omit',redirect:'error',referrerPolicy:'no-referrer'});
         if(!response.ok) {
-          const messages={401:'访问口令不正确，请修改后重试',403:'当前网页来源未获允许',422:'本次 HRV 数据未通过校验',
+          const messages={403:'当前网页来源未获允许',422:'本次 HRV 数据未通过校验',
             429:'调用次数已达上限，请稍后再试',502:'AI 服务暂时不可用，可手动重试',503:'AI 服务暂时不可用',504:'AI 分析超时，可手动重试'};
           let code='';try {code=(await response.json()).error;} catch(_) {}
           const error=new Error(code==='daily_limit'?'今日 10 次已用完，北京时间零点恢复':messages[response.status]||'AI 分析暂时不可用');
@@ -98,7 +88,7 @@
     render() {
       $('llm-status').textContent=this.message;
       $('llm-output').textContent=this.result?.text||'';$('llm-output').hidden=!this.result;
-      $('llm-send').hidden=!['error','cancelled','credentials'].includes(this.state)&&!(this.mode==='demo'&&this.snapshot&&this.state!=='done');
+      $('llm-send').hidden=!['error','cancelled'].includes(this.state)&&!(this.mode==='demo'&&this.snapshot&&this.state!=='done');
       $('llm-send').disabled=!this.snapshot||this.state==='loading'||!$('llm-enabled').checked;
       $('llm-send').textContent=this.attempts?'重试分析':'开始分析';
       if($('report-status')) {
