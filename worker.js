@@ -1,5 +1,5 @@
 'use strict';
-importScripts('ppg-core.js?v=9-green', 'spectral-motion.js?v=10');
+importScripts('ppg-core.js?v=11-red', 'spectral-motion.js?v=10');
 let pipeline;
 self.onmessage = event => {
   const {id, t, frame, pixels} = event.data;

@@ -8,11 +8,11 @@
   <title>指尖脉搏 · FingerPPG</title>
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="style.css?v=10-spectral">
-  <script src="ppg-core.js?v=9-green" defer></script>
-  <script src="ppg-view.js?v=10-spectral" defer></script>
+  <script src="ppg-core.js?v=11-red" defer></script>
+  <script src="ppg-view.js?v=11-red" defer></script>
   <script src="spectral-motion.js?v=10" defer></script>
   <script src="llm.js?v=8-ai5" defer></script>
-  <script src="app.js?v=10-spectral" defer></script>
+  <script src="app.js?v=11-red" defer></script>
 </head>
 <body>
   <div class="shell">
@@ -41,12 +41,12 @@
             </div>
           </section>
           <section class="card waveform-card" aria-labelledby="wave-heading">
-            <div class="card-heading"><h2 id="wave-heading">绿通道实时波形</h2><span id="wave-legend">最近 10 秒</span></div>
+            <div class="card-heading"><h2 id="wave-heading">红通道实时波形</h2><span id="wave-legend">最近 10 秒</span></div>
             <label class="imu-switch spectral-switch"><input id="spectral-enabled" type="checkbox"> IMU 频域去伪影（实验）</label>
             <p id="spectral-status" class="caption" role="status">频域去伪影已关闭</p>
             <p id="spectral-detail" class="caption">8 秒滑窗 · 每秒更新 · 输出延迟约 4–5 秒；开启后暂停 HRV 与自动 AI。</p>
-            <canvas id="wave" aria-label="最近十秒的绿通道脉搏波形"></canvas>
-            <div class="stats"><div><span>实际到帧率</span><strong id="fps">—</strong><small>Hz</small></div><div><span>采集时长</span><strong id="elapsed">0.0</strong><small>s</small></div><div><span>绿通道均值</span><strong id="green">—</strong></div></div>
+            <canvas id="wave" aria-label="最近十秒的红通道脉搏波形"></canvas>
+            <div class="stats"><div><span>实际到帧率</span><strong id="fps">—</strong><small>Hz</small></div><div><span>采集时长</span><strong id="elapsed">0.0</strong><small>s</small></div><div><span>红通道均值</span><strong id="red">—</strong></div></div>
           </section>
           <section id="capture-report" class="card capture-report-card" aria-labelledby="report-heading">
             <div class="report-heading"><h2 id="report-heading">本次测量报告</h2><span id="report-status">等待 30 秒 HRV</span><button id="report-save" class="secondary" type="button" disabled>保存报告图</button></div>
@@ -85,7 +85,7 @@
               <div id="preview-empty" class="preview-empty"><span class="camera-glyph" aria-hidden="true">◎</span><span>开始后显示相机预览</span></div>
             </div>
             <div class="camera-lock"><span>固定镜头 · 采集中不切换</span><strong id="camera-name">优先使用独立后置主摄</strong></div>
-            <p class="caption">使用中央区域的 RGB 绿通道计算波形、心率和 HRV。绿通道过暗时请增加环境光，波形不稳定时心率暂时留空。</p>
+            <p class="caption">使用中央区域的 RGB 红通道计算波形、心率和 HRV。红通道过暗时请增加环境光，波形不稳定时心率暂时留空。</p>
           </section>
           <section class="card export-card"><h2>保存本次数据</h2><p class="caption">数据保存在当前页面。完整 JSON 包含 PPG、RGB、IMU、HRV 与时间戳。</p>
             <label class="field-label" for="export-type">导出内容</label><select id="export-type"><option value="session">完整会话 PPG + IMU + HRV JSON</option><option value="waveform">波形与心率 CSV</option><option value="hrv">30 s HRV 指标 CSV</option><option value="frames">原始 RGB 与时间戳 CSV</option><option value="imu">原始 IMU 与时间戳 CSV</option><option value="metadata">采集参数 JSON</option></select>
@@ -107,7 +107,7 @@
         <p>心率为算法估计，尚未进行参考心率验证。时间戳记录浏览器帧回调时刻，不是硬件曝光时间。</p>
       </div></details>
     </main>
-    <footer><span>FingerPPG · 绿通道 + 频域去伪影 v10</span><span>本地采集计算 · AI 解读可选 · 无补光</span></footer>
+    <footer><span>FingerPPG · 红通道 + 频域去伪影 v11</span><span>本地采集计算 · AI 解读可选 · 无补光</span></footer>
   </div>
   <noscript>本页面需要启用 JavaScript 才能采集和显示波形。</noscript>
 </body>

@@ -15,7 +15,7 @@
     if (!row) return '点击开始，采集指尖信号';
     const labels = {warming_up: '估计中 · 滤波初始化', collecting: '估计中 · 请保持手指稳定',
       tracking: '正在估计 · 最近 8 秒，每秒更新', unreliable: '波形不够稳定，暂不输出心率',
-      low_frame_rate: '到帧率偏低，暂不输出心率', low_light: '绿通道光照不足 · 请调整位置或增加环境光',
+      low_frame_rate: '到帧率偏低，暂不输出心率', low_light: '红通道光照不足 · 请调整位置或增加环境光',
       no_finger: '等待手指覆盖摄像头', invalid_intensity: '无有效光学信号', invalid_signal: '无有效波形'};
     return labels[row.heart_rate_status] || '估计中';
   }

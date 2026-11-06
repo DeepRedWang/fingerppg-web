@@ -305,7 +305,7 @@
       this.spectralWindows=[];this.spectralStatus=this.spectralEnabled?'warming_up':'disabled';this.latestSpectralRow=null;
       if(this.spectralEnabled)$('imu-enabled').checked=true;
       this.motion.reset(mode, this.origin, !!$('imu-enabled').checked);
-      this.metadata = {version: 10, build: 'green-spectral-v10', ppg_channel: 'green', mode, started_at: new Date().toISOString(), backend: null, video_uploaded: false,
+      this.metadata = {version: 11, build: 'red-spectral-v11', ppg_channel: 'red', mode, started_at: new Date().toISOString(), backend: null, video_uploaded: false,
         spectral_filter:{enabled:this.spectralEnabled,...FingerSpectral.SETTINGS},
         hrv: {source:'PPG pulse-to-pulse intervals (PRV), not ECG RR/NN intervals',window_s:30,update_s:5,
           time_domain:'SDRR: sample standard deviation (N-1); RMSSD: RMS successive differences; pNN50: differences strictly greater than 50 ms / (N-1) * 100.',
@@ -317,18 +317,18 @@
         session_origin_performance_ms: this.origin, performance_time_origin_unix_ms: finite(performance.timeOrigin),
         synchronization: 'PPG and IMU use the same session origin on the page performance clock. Callback times are not hardware capture times; sensor/camera delay is not calibrated.',
         requested_flash: false, requested_camera_fps: mode === 'camera' ? this.targetFps : null, filter_fs_hz: 60,
-        pixel_processing: 'Original central 60% ROI only; no downscaling. Green-channel primary/HR/HRV; raw RGB retained. Worker processing when available.',
-        optical_quality_gate: 'Green mean >= 8/255 and original RGB finger-coverage heuristic R > 2G. Red is used for coverage only, never as a pulse-signal fallback.',
+        pixel_processing: 'Original central 60% ROI only; no downscaling. Red-channel primary/HR/HRV; raw RGB retained. Worker processing when available.',
+        optical_quality_gate: 'Red mean >= 8/255 and original RGB finger-coverage heuristic R > 2G. Green is used for coverage only; a dark green channel does not block a valid red signal.',
         roi_fraction_xyxy: [.2,.2,.8,.8], bandpass_hz: [.5,5], warmup_s: 3,
         heart_rate_window_s: 8, heart_rate_minimum_initialized_s: 5, heart_rate_update_s: 1,
         timestamp_basis: mode === 'camera' ? 'performance.now() at video frame callback; relative seconds, not hardware exposure time.' : 'Synthetic 30 Hz signal times; paced demonstration, not camera measurements.'};
-      $('bpm').textContent = '—'; $('fps').textContent = '—'; $('elapsed').textContent = '0.0'; $('green').textContent = '—';
+      $('bpm').textContent = '—'; $('fps').textContent = '—'; $('elapsed').textContent = '0.0'; $('red').textContent = '—';
       $('export').disabled = true; $('export-note').textContent = '采集后即可导出。';
       $('mode-pill').textContent = mode === 'demo' ? '演示 · 非实测' : '实时采集';
       $('mode-pill').className = 'mode-pill ' + (mode === 'demo' ? 'demo' : 'live');
       this.processor = null;
       try {
-        this.worker = new Worker('worker.js?v=10-spectral');
+        this.worker = new Worker('worker.js?v=11-red');
         const token = this.token;
         this.worker.onmessage = event => {
           if (token !== this.token || !this.running) return;
@@ -596,13 +596,13 @@
         if (this.mode === 'camera') $('camera-state').textContent = '采集中';
       }
       $('fps').textContent = rate.toFixed(1); $('elapsed').textContent = (this.mode === 'camera' ? clockTime : this.lastTime).toFixed(1);
-      $('green').textContent = rgb[1].toFixed(1); $('export').disabled = !this.hasData();
+      $('red').textContent = rgb[0].toFixed(1); $('export').disabled = !this.hasData();
       $('export-note').textContent = this.mode === 'demo' ? '演示数据，文件名带 DEMO 标记。' : '数据保存在当前页面，请在关闭前下载。';
       this.renderHrv();
       this.renderSpectral();
     }
     renderSpectral(){
-      const labels={disabled:'频域去伪影已关闭',warming_up:'累计 8 秒有效信号，准备频域输出',invalid_ppg:'绿通道信号无效或初始化中',
+      const labels={disabled:'频域去伪影已关闭',warming_up:'累计 8 秒有效信号，准备频域输出',invalid_ppg:'红通道信号无效或初始化中',
         missing_imu:'IMU 缺失或有长缺口 · 本窗口未处理',overlap_ambiguous:'心搏与运动频率接近 · 本窗口不消除、不输出滤波心率',
         no_pulse_candidate:'没有可区分的脉搏峰 · 本窗口未处理',quiet:'运动较小 · 保留原波形',no_shared_peaks:'未找到共同运动峰 · 保留原波形',filtering:'已抑制共同运动频率 · 实验结果'};
       $('spectral-status').textContent=labels[this.spectralStatus||'disabled'];
@@ -611,7 +611,7 @@
         `IMU 主峰 ${latest.motion_peaks_hz.map(f=>f.toFixed(2)).join(' / ')||'—'} Hz；抑制 ${latest.suppressed_peaks_hz.map(f=>f.toFixed(2)).join(' / ')||'—'} Hz`:
         '8 秒滑窗 · 每秒更新 · 输出延迟约 4–5 秒；开启后暂停 HRV 与自动 AI。';
       if(this.spectralEnabled){
-        $('report-status').textContent='频域测试';$('report-window').textContent='绿通道 + 三轴 IMU 功率谱';
+        $('report-status').textContent='频域测试';$('report-window').textContent='红通道 + 三轴 IMU 功率谱';
         $('report-metrics').textContent=$('spectral-status').textContent;
         $('report-text').textContent=$('spectral-detail').textContent+'\n\n橙线是原波形，绿线是频域输出，灰线表示本段无法可靠区分。两条曲线按原始采样时间对齐。可下载完整会话比较结果。';
         $('llm-status').textContent='频域测试中暂停 HRV 与自动 AI；关闭去伪影后重新采集可恢复。';
@@ -651,8 +651,8 @@
         if (!this.running || this.busy) return;
         const elapsed = (performance.now() - this.origin) / 1000;
         if (index / 30 <= elapsed) {
-          const t = index++ / 30, green = 20 * Math.exp(-.01 * Math.sin(2 * Math.PI * 1.2 * t));
-          this.framesSeen++; this.submit(t, [80, green, 4]);
+          const t = index++ / 30, red = 50 * Math.exp(-.01 * Math.sin(2 * Math.PI * 1.2 * t));
+          this.framesSeen++; this.submit(t, [red, 1, 4]);
         }
       }, 8);
     }
