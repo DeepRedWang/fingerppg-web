@@ -1,5 +1,5 @@
 'use strict';
-importScripts('ppg-core.js?v=5');
+importScripts('ppg-core.js?v=9-green');
 const processor = new FingerPPG.PrimaryStream();
 const hrvTracker = new FingerPPG.HRVTracker();
 self.onmessage = event => {

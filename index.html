@@ -8,10 +8,10 @@
   <title>指尖脉搏 · FingerPPG</title>
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="style.css?v=8-ai5">
-  <script src="ppg-core.js?v=5" defer></script>
-  <script src="ppg-view.js" defer></script>
+  <script src="ppg-core.js?v=9-green" defer></script>
+  <script src="ppg-view.js?v=9-green" defer></script>
   <script src="llm.js?v=8-ai5" defer></script>
-  <script src="app.js?v=8-ai5" defer></script>
+  <script src="app.js?v=9-green" defer></script>
 </head>
 <body>
   <div class="shell">
@@ -40,9 +40,9 @@
             </div>
           </section>
           <section class="card waveform-card" aria-labelledby="wave-heading">
-            <div class="card-heading"><h2 id="wave-heading">Primary 实时波形</h2><span><i class="legend-dot"></i> 最近 10 秒</span></div>
-            <canvas id="wave" aria-label="最近十秒的 primary 脉搏波形"></canvas>
-            <div class="stats"><div><span>实际到帧率</span><strong id="fps">—</strong><small>Hz</small></div><div><span>采集时长</span><strong id="elapsed">0.0</strong><small>s</small></div><div><span>红通道均值</span><strong id="red">—</strong></div></div>
+            <div class="card-heading"><h2 id="wave-heading">绿通道实时波形</h2><span><i class="legend-dot"></i> 最近 10 秒</span></div>
+            <canvas id="wave" aria-label="最近十秒的绿通道脉搏波形"></canvas>
+            <div class="stats"><div><span>实际到帧率</span><strong id="fps">—</strong><small>Hz</small></div><div><span>采集时长</span><strong id="elapsed">0.0</strong><small>s</small></div><div><span>绿通道均值</span><strong id="green">—</strong></div></div>
           </section>
           <section id="capture-report" class="card capture-report-card" aria-labelledby="report-heading">
             <div class="report-heading"><h2 id="report-heading">本次测量报告</h2><span id="report-status">等待 30 秒 HRV</span><button id="report-save" class="secondary" type="button" disabled>保存报告图</button></div>
@@ -81,7 +81,7 @@
               <div id="preview-empty" class="preview-empty"><span class="camera-glyph" aria-hidden="true">◎</span><span>开始后显示相机预览</span></div>
             </div>
             <div class="camera-lock"><span>固定镜头 · 采集中不切换</span><strong id="camera-name">优先使用独立后置主摄</strong></div>
-            <p class="caption">采集中央区域的红通道。光照不足或波形不稳定时，心率会暂时留空。</p>
+            <p class="caption">使用中央区域的 RGB 绿通道计算波形、心率和 HRV。绿通道过暗时请增加环境光，波形不稳定时心率暂时留空。</p>
           </section>
           <section class="card export-card"><h2>保存本次数据</h2><p class="caption">数据保存在当前页面。完整 JSON 包含 PPG、RGB、IMU、HRV 与时间戳。</p>
             <label class="field-label" for="export-type">导出内容</label><select id="export-type"><option value="session">完整会话 PPG + IMU + HRV JSON</option><option value="waveform">波形与心率 CSV</option><option value="hrv">30 s HRV 指标 CSV</option><option value="frames">原始 RGB 与时间戳 CSV</option><option value="imu">原始 IMU 与时间戳 CSV</option><option value="metadata">采集参数 JSON</option></select>
@@ -103,7 +103,7 @@
         <p>心率为算法估计，尚未进行参考心率验证。时间戳记录浏览器帧回调时刻，不是硬件曝光时间。</p>
       </div></details>
     </main>
-    <footer><span>FingerPPG · 30 秒 AI 报告 v8.4</span><span>本地采集计算 · AI 解读可选 · 无补光</span></footer>
+    <footer><span>FingerPPG · 绿通道测试 v9</span><span>本地采集计算 · AI 解读可选 · 无补光</span></footer>
   </div>
   <noscript>本页面需要启用 JavaScript 才能采集和显示波形。</noscript>
 </body>

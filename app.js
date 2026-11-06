@@ -295,7 +295,7 @@
       this.cameraMuted = false; this.cameraStalled = false; this.latestRgb = null;
       this.mode = mode; this.origin = performance.now(); this.lastFrameWall = this.origin; this.receivedFrame = false;
       this.motion.reset(mode, this.origin, !!$('imu-enabled').checked);
-      this.metadata = {version: 8, build: 'ai-deepseek-v8', mode, started_at: new Date().toISOString(), backend: null, video_uploaded: false,
+      this.metadata = {version: 9, build: 'green-channel-v9', ppg_channel: 'green', mode, started_at: new Date().toISOString(), backend: null, video_uploaded: false,
         hrv: {source:'PPG pulse-to-pulse intervals (PRV), not ECG RR/NN intervals',window_s:30,update_s:5,
           time_domain:'SDRR: sample standard deviation (N-1); RMSSD: RMS successive differences; pNN50: differences strictly greater than 50 ms / (N-1) * 100.',
           frequency_domain:'Exploratory 30 s only. Interval midpoints linearly interpolated at 4 Hz within observed bounds, linear detrend, periodic Hann periodogram, 512-point frequency grid, trapezoidal band integration. LF 0.04-0.15 Hz, HF 0.15-0.40 Hz. Zero padding does not improve true resolution.',
@@ -306,17 +306,18 @@
         session_origin_performance_ms: this.origin, performance_time_origin_unix_ms: finite(performance.timeOrigin),
         synchronization: 'PPG and IMU use the same session origin on the page performance clock. Callback times are not hardware capture times; sensor/camera delay is not calibrated.',
         requested_flash: false, requested_camera_fps: mode === 'camera' ? this.targetFps : null, filter_fs_hz: 60,
-        pixel_processing: 'Original central 60% ROI only; no downscaling. RGB averaging and primary/HR processing in worker when available.',
+        pixel_processing: 'Original central 60% ROI only; no downscaling. Green-channel primary/HR/HRV; raw RGB retained. Worker processing when available.',
+        optical_quality_gate: 'Green mean >= 8/255 and original RGB finger-coverage heuristic R > 2G. Red is used for coverage only, never as a pulse-signal fallback.',
         roi_fraction_xyxy: [.2,.2,.8,.8], bandpass_hz: [.5,5], warmup_s: 3,
         heart_rate_window_s: 8, heart_rate_minimum_initialized_s: 5, heart_rate_update_s: 1,
         timestamp_basis: mode === 'camera' ? 'performance.now() at video frame callback; relative seconds, not hardware exposure time.' : 'Synthetic 30 Hz signal times; paced demonstration, not camera measurements.'};
-      $('bpm').textContent = '—'; $('fps').textContent = '—'; $('elapsed').textContent = '0.0'; $('red').textContent = '—';
+      $('bpm').textContent = '—'; $('fps').textContent = '—'; $('elapsed').textContent = '0.0'; $('green').textContent = '—';
       $('export').disabled = true; $('export-note').textContent = '采集后即可导出。';
       $('mode-pill').textContent = mode === 'demo' ? '演示 · 非实测' : '实时采集';
       $('mode-pill').className = 'mode-pill ' + (mode === 'demo' ? 'demo' : 'live');
       this.processor = null;
       try {
-        this.worker = new Worker('worker.js?v=5');
+        this.worker = new Worker('worker.js?v=9-green');
         const token = this.token;
         this.worker.onmessage = event => {
           if (token !== this.token || !this.running) return;
@@ -566,7 +567,7 @@
         if (this.mode === 'camera') $('camera-state').textContent = '采集中';
       }
       $('fps').textContent = rate.toFixed(1); $('elapsed').textContent = (this.mode === 'camera' ? clockTime : this.lastTime).toFixed(1);
-      $('red').textContent = rgb[0].toFixed(1); $('export').disabled = !this.hasData();
+      $('green').textContent = rgb[1].toFixed(1); $('export').disabled = !this.hasData();
       $('export-note').textContent = this.mode === 'demo' ? '演示数据，文件名带 DEMO 标记。' : '数据保存在当前页面，请在关闭前下载。';
       this.renderHrv();
     }
@@ -602,8 +603,8 @@
         if (!this.running || this.busy) return;
         const elapsed = (performance.now() - this.origin) / 1000;
         if (index / 30 <= elapsed) {
-          const t = index++ / 30, red = 50 * Math.exp(-.01 * Math.sin(2 * Math.PI * 1.2 * t));
-          this.framesSeen++; this.submit(t, [red, 10, 4]);
+          const t = index++ / 30, green = 20 * Math.exp(-.01 * Math.sin(2 * Math.PI * 1.2 * t));
+          this.framesSeen++; this.submit(t, [80, green, 4]);
         }
       }, 8);
     }
