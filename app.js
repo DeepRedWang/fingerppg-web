@@ -212,6 +212,11 @@
       $('demo').addEventListener('click', () => this.startDemo());
       $('export').addEventListener('click', () => this.exportData());
       $('focus').addEventListener('click', () => this.setFocus(!this.focusMode));
+      $('spectral-enabled').addEventListener('change',()=>{
+        if($('spectral-enabled').checked)$('imu-enabled').checked=true;
+        $('spectral-status').textContent=$('spectral-enabled').checked?
+          '已选择频域去伪影 · 开始后累计频谱，HRV 与自动 AI 暂停':'频域去伪影已关闭';
+      });
       this.preventPagePan = event => { if (event.cancelable && !event.target?.closest?.('.report-text')) event.preventDefault(); };
       this.lastScrollLogged = -Infinity;
       window.addEventListener('scroll', event => {
@@ -284,7 +289,9 @@
       $('action-note').textContent = enabled ? '画面已固定 · 停止后可下载完整数据' : this.actionNote;
       this.logPageEvent(enabled ? 'focus-enter' : 'focus-exit'); this.resize();
     }
-    paint() { if (this.width && this.waveVisible !== false) PPGView.drawWave(this.ctx, this.width, this.height, this.history, this.lastTime || 0); }
+    paint() { if (this.width && this.waveVisible !== false) PPGView.drawWave(this.ctx, this.width, this.height, this.history,
+      this.spectralEnabled&&this.latestSpectralRow?this.latestSpectralRow.time_s:this.lastTime||0,
+      {spectral:!!this.spectralEnabled}); }
     setupSession(mode) {
       this.interpretation.reset(mode);
       this.rows = []; this.frames = []; this.history = []; this.arrivals = [];
@@ -294,8 +301,12 @@
       this.pendingFrames = 0; this.cameraEvents = []; this.cameraInterruptions = []; this.pageEvents = []; this.cameraEnded = false;
       this.cameraMuted = false; this.cameraStalled = false; this.latestRgb = null;
       this.mode = mode; this.origin = performance.now(); this.lastFrameWall = this.origin; this.receivedFrame = false;
+      this.spectralEnabled=!!$('spectral-enabled').checked;this.imuCursor=0;this.rowIndex=new Map();
+      this.spectralWindows=[];this.spectralStatus=this.spectralEnabled?'warming_up':'disabled';this.latestSpectralRow=null;
+      if(this.spectralEnabled)$('imu-enabled').checked=true;
       this.motion.reset(mode, this.origin, !!$('imu-enabled').checked);
-      this.metadata = {version: 9, build: 'green-channel-v9', ppg_channel: 'green', mode, started_at: new Date().toISOString(), backend: null, video_uploaded: false,
+      this.metadata = {version: 10, build: 'green-spectral-v10', ppg_channel: 'green', mode, started_at: new Date().toISOString(), backend: null, video_uploaded: false,
+        spectral_filter:{enabled:this.spectralEnabled,...FingerSpectral.SETTINGS},
         hrv: {source:'PPG pulse-to-pulse intervals (PRV), not ECG RR/NN intervals',window_s:30,update_s:5,
           time_domain:'SDRR: sample standard deviation (N-1); RMSSD: RMS successive differences; pNN50: differences strictly greater than 50 ms / (N-1) * 100.',
           frequency_domain:'Exploratory 30 s only. Interval midpoints linearly interpolated at 4 Hz within observed bounds, linear detrend, periodic Hann periodogram, 512-point frequency grid, trapezoidal band integration. LF 0.04-0.15 Hz, HF 0.15-0.40 Hz. Zero padding does not improve true resolution.',
@@ -317,7 +328,7 @@
       $('mode-pill').className = 'mode-pill ' + (mode === 'demo' ? 'demo' : 'live');
       this.processor = null;
       try {
-        this.worker = new Worker('worker.js?v=9-green');
+        this.worker = new Worker('worker.js?v=10-spectral');
         const token = this.token;
         this.worker.onmessage = event => {
           if (token !== this.token || !this.running) return;
@@ -327,13 +338,16 @@
         this.worker.onerror = () => { if (token === this.token) this.stop('计算模块加载失败，请刷新页面并检查部署文件'); };
         this.metadata.processing = 'Web Worker';
       } catch (_) {
-        this.worker = null; this.processor = new FingerPPG.PrimaryStream(); this.hrvTracker = new FingerPPG.HRVTracker(); this.metadata.processing = 'main-thread fallback';
+        this.worker = null; this.processor = new FingerSpectral.Pipeline(this.spectralEnabled); this.metadata.processing = 'main-thread fallback';
       }
+      $('wave-legend').textContent=this.spectralEnabled?'橙：原始 · 绿：频域输出':'最近 10 秒';
+      this.renderSpectral();this.renderHrv();
       this.paint();
     }
     setRunning() {
       this.running = true; this.starting = false;
       $('imu-enabled').disabled = true;
+      $('spectral-enabled').disabled = true;
       $('capture-fps').disabled = true;
       $('start').textContent = '停止采集'; $('start').disabled = false; $('demo').disabled = true;
       $('focus').disabled = false;
@@ -359,6 +373,8 @@
       if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { this.environment(); return; }
       const token = ++this.token;
       this.starting = true; $('start').textContent = '取消启动'; $('demo').disabled = true;
+      if($('spectral-enabled').checked)$('imu-enabled').checked=true;
+      $('spectral-enabled').disabled=true;
       $('imu-enabled').disabled = true; $('capture-fps').disabled = true;
       this.targetFps = $('capture-fps').value === '30' ? 30 : 60;
       const motionPermission = MotionCapture.permission(!!$('imu-enabled').checked);
@@ -520,7 +536,9 @@
     submit(t, rgb, frame = {}, pixels = null) {
       if (!this.running || (this.lastTimestamp !== null && t <= this.lastTimestamp)) return;
       this.lastTimestamp = t;
-      const input = {id: ++this.requestId, t, rgb, frame, pixels};
+      const imu=this.spectralEnabled?this.motion.rows.slice(this.imuCursor):[];
+      this.imuCursor=this.motion.rows.length;
+      const input = {id: ++this.requestId, t, rgb, frame, pixels, imu, spectral:this.spectralEnabled};
       if (this.worker) {
         this.pendingFrames++; this.busy = this.pendingFrames >= 3;
         this.worker.postMessage(input, pixels ? [pixels.buffer] : []);
@@ -531,14 +549,22 @@
           for (let i=0;i<pixels.length;i+=4) { rgb[0]+=pixels[i]; rgb[1]+=pixels[i+1]; rgb[2]+=pixels[i+2]; }
           rgb = rgb.map(value=>value/(pixels.length/4)); input.rgb = rgb;
         }
-        const start = performance.now(), rows = this.processor.feed(t, rgb[0], rgb[1]);
-        const hrv = rows.map(row=>this.hrvTracker.feed(row)).filter(Boolean);
-        this.accept({...input, rows, hrv, processing_ms: performance.now() - start});
+        const start = performance.now(), result = this.processor.feed(t,rgb,imu);
+        this.accept({...input, ...result, processing_ms: performance.now() - start});
       }
     }
     accept(result) {
       const {t, rgb, frame, rows} = result;
       this.rows.push(...rows); this.history.push(...rows); this.lastTime = t;
+      if(this.spectralEnabled){
+        for(const row of rows)this.rowIndex.set(row.time_s.toFixed(6),row);
+        for(const row of result.filteredRows||[]){
+          const original=this.rowIndex.get(row.time_s.toFixed(6));if(original)Object.assign(original,row);
+          this.latestSpectralRow=original||row;
+        }
+        this.spectralWindows.push(...(result.spectralWindows||[]));
+        this.spectralStatus=result.spectralStatus||this.spectralStatus;
+      }
       if (result.hrv?.length) {
         this.hrvRows.push(...result.hrv); this.currentHrv = result.hrv[result.hrv.length-1];
         if (!this.cameraMuted && !this.cameraStalled && !this.cameraEnded) result.hrv.forEach(hrv => this.interpretation.consider(hrv));
@@ -550,26 +576,46 @@
         roi_width:frame.roi_width ?? null, roi_height:frame.roi_height ?? null, capture_readback_ms:frame.capture_readback_ms ?? null,
         width: frame.width ?? null, height: frame.height ?? null, processing_ms: result.processing_ms});
       this.arrivals.push(t); if (this.arrivals.length > 120) this.arrivals.shift();
-      while (this.history.length && this.history[0].time_s < t - 12) this.history.shift();
+      while (this.history.length && this.history[0].time_s < t - (this.spectralEnabled?18:12)) this.history.shift();
       const now = performance.now();
       if (now - this.lastUi >= 200) { this.updateReadout(rgb); this.lastUi = now; }
       if (t >= 300) this.stop('已完成 5 分钟采集，请下载数据');
     }
     updateReadout(rgb) {
-      const row = this.rows[this.rows.length - 1], clockTime = (performance.now()-this.origin)/1000;
+      const row = this.spectralEnabled?this.latestSpectralRow:this.rows[this.rows.length - 1], clockTime = (performance.now()-this.origin)/1000;
       let first = this.cameraEvents.length;
       while (first && this.cameraEvents[first-1].time_s >= clockTime-5) first--;
       const times = this.mode === 'camera' ? this.cameraEvents.slice(first).map(event=>event.time_s) : this.arrivals;
       const n = times.length, rate = n > 1 ? (n-1)/(times[n-1]-times[0]) : 0;
-      $('bpm').textContent = !this.cameraStalled && !this.cameraMuted && row && row.heart_rate_bpm !== null ? row.heart_rate_bpm.toFixed(0) : '—';
+      const validSpectrum=!this.spectralEnabled||(!['warming_up','invalid_ppg','missing_imu','overlap_ambiguous','no_pulse_candidate'].includes(this.spectralStatus)&&
+        row?.spectral_ready&&this.lastTime-row.time_s<=6.2);
+      const bpm=this.spectralEnabled?row?.spectral_heart_rate_bpm:row?.heart_rate_bpm;
+      $('bpm').textContent = !this.cameraStalled && !this.cameraMuted && validSpectrum && Number.isFinite(bpm) ? bpm.toFixed(0) : '—';
       if (!this.cameraStalled && !this.cameraMuted) {
-        $('status').textContent = PPGView.statusText(row);
+        $('status').textContent = this.spectralEnabled?'频域去伪影测试 · 输出延迟约 4–5 秒':PPGView.statusText(row);
         if (this.mode === 'camera') $('camera-state').textContent = '采集中';
       }
       $('fps').textContent = rate.toFixed(1); $('elapsed').textContent = (this.mode === 'camera' ? clockTime : this.lastTime).toFixed(1);
       $('green').textContent = rgb[1].toFixed(1); $('export').disabled = !this.hasData();
       $('export-note').textContent = this.mode === 'demo' ? '演示数据，文件名带 DEMO 标记。' : '数据保存在当前页面，请在关闭前下载。';
       this.renderHrv();
+      this.renderSpectral();
+    }
+    renderSpectral(){
+      const labels={disabled:'频域去伪影已关闭',warming_up:'累计 8 秒有效信号，准备频域输出',invalid_ppg:'绿通道信号无效或初始化中',
+        missing_imu:'IMU 缺失或有长缺口 · 本窗口未处理',overlap_ambiguous:'心搏与运动频率接近 · 本窗口不消除、不输出滤波心率',
+        no_pulse_candidate:'没有可区分的脉搏峰 · 本窗口未处理',quiet:'运动较小 · 保留原波形',no_shared_peaks:'未找到共同运动峰 · 保留原波形',filtering:'已抑制共同运动频率 · 实验结果'};
+      $('spectral-status').textContent=labels[this.spectralStatus||'disabled'];
+      const latest=this.spectralWindows?.at(-1);
+      $('spectral-detail').textContent=this.spectralEnabled&&latest?
+        `IMU 主峰 ${latest.motion_peaks_hz.map(f=>f.toFixed(2)).join(' / ')||'—'} Hz；抑制 ${latest.suppressed_peaks_hz.map(f=>f.toFixed(2)).join(' / ')||'—'} Hz`:
+        '8 秒滑窗 · 每秒更新 · 输出延迟约 4–5 秒；开启后暂停 HRV 与自动 AI。';
+      if(this.spectralEnabled){
+        $('report-status').textContent='频域测试';$('report-window').textContent='绿通道 + 三轴 IMU 功率谱';
+        $('report-metrics').textContent=$('spectral-status').textContent;
+        $('report-text').textContent=$('spectral-detail').textContent+'\n\n橙线是原波形，绿线是频域输出，灰线表示本段无法可靠区分。两条曲线按原始采样时间对齐。可下载完整会话比较结果。';
+        $('llm-status').textContent='频域测试中暂停 HRV 与自动 AI；关闭去伪影后重新采集可恢复。';
+      }
     }
     renderHrv() {
       const hrv = this.currentHrv;
@@ -578,6 +624,8 @@
       const fields = {'hrv-sdrr':'sdrr_ms','hrv-rmssd':'rmssd_ms','hrv-pnn50':'pnn50_pct','hrv-lfhf':'lf_hf_ratio'};
       for (const [id,key] of Object.entries(fields))
         $(id).textContent = valid && Number.isFinite(hrv[key]) ? hrv[key].toFixed(key==='lf_hf_ratio'?2:1) : '—';
+      if(this.spectralEnabled){$('hrv-status').textContent='频域去伪影测试 · HRV 暂停';
+        $('hrv-note').textContent='滤波后的逐搏间期尚未验证，自动 AI 同步暂停';return;}
       let message = '等待连续 30 s 信号';
       if (interrupted) message = '相机暂缓 · 等待有效信号';
       else if (valid) message = `${this.running?'':'已停止 · '}${hrv.interval_count} 间期 · ${hrv.time_s.toFixed(0)} s 更新`;
@@ -612,6 +660,7 @@
       this.setFocus(false); this.running = false; this.starting = false; ++this.token;
       $('focus').disabled = true;
       this.motion.stop(); this.motion.render(); $('imu-enabled').disabled = false; $('capture-fps').disabled = false;
+      $('spectral-enabled').disabled=false;
       if (this.uiTimer) clearInterval(this.uiTimer); this.uiTimer = null;
       if (this.callbackId !== null) {
         if (this.callbackType === 'video' && this.video.cancelVideoFrameCallback) this.video.cancelVideoFrameCallback(this.callbackId);
@@ -647,7 +696,8 @@
           missed_presented_frames: this.presentedMissed, waveform_rows: this.rows.length, hrv_latest:this.currentHrv,
           interpretation:this.interpretation.summary()};
       if (type === 'metadata' || type === 'session') {
-        content = JSON.stringify(type === 'session' ? {metadata, waveform: this.rows, frames: this.frames, camera_events: this.cameraEvents, imu: this.motion.rows, hrv:this.hrvRows} : metadata, null, 2);
+        content = JSON.stringify(type === 'session' ? {metadata, waveform: this.rows, frames: this.frames, camera_events: this.cameraEvents, imu: this.motion.rows, hrv:this.hrvRows,
+          spectral_windows:this.spectralWindows} : metadata, null, 2);
         extension = '.json'; mime = 'application/json';
         if (type === 'session') extension = '_session.json';
       } else if (type === 'hrv') {

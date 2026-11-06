@@ -26,13 +26,14 @@
       '"' + String(v).replace(/"/g, '""') + '"';
     return '\ufeff' + keys.join(',') + '\n' + rows.map(r => keys.map(k => value(r[k])).join(',')).join('\n') + '\n';
   }
-  function drawWave(ctx, width, height, rows, time) {
+  function drawWave(ctx, width, height, rows, time, {spectral=false}={}) {
     const l = 44, r = width - 12, t = 25, b = height - 30;
     ctx.clearRect(0, 0, width, height); ctx.fillStyle = '#11263b'; ctx.fillRect(0, 0, width, height);
     const end = Math.max(10, time), start = end - 10;
     const visible = rows.filter(row => row.time_s >= start && row.time_s <= end);
     let limit = .5;
-    visible.forEach(row => { if (row.primary_bvp !== null) limit = Math.max(limit, Math.abs(row.primary_bvp * 1000) * 1.15); });
+    visible.forEach(row => { for(const key of spectral?['primary_bvp','filtered_bvp']:['primary_bvp'])
+      if (Number.isFinite(row[key])) limit = Math.max(limit, Math.abs(row[key] * 1000) * 1.15); });
     ctx.font = '10px sans-serif'; ctx.lineWidth = 1;
     for (let i = 0; i <= 4; i++) {
       const y = t + i * (b - t) / 4;
@@ -46,14 +47,20 @@
     }
     ctx.fillStyle = '#91a9bb'; ctx.textAlign = 'left'; ctx.fillText('相对幅度 ×1000', l, 14);
     ctx.textAlign = 'right'; ctx.fillText('秒', r, 14);
+    if(spectral){let previous=null;ctx.lineWidth=1;ctx.strokeStyle='#e3a466';
+      for(const row of visible){if(!Number.isFinite(row.primary_bvp)){previous=null;continue;}
+        const x=l+(row.time_s-start)/10*(r-l),y=(t+b)/2-row.primary_bvp*1000/limit*(b-t)/2;
+        if(previous&&previous.segment===row.segment){ctx.beginPath();ctx.moveTo(previous.x,previous.y);ctx.lineTo(x,y);ctx.stroke();}
+        previous={x,y,segment:row.segment};}}
     let group = null, previous = null;
+    const signalKey=spectral?'filtered_bvp':'primary_bvp';
     ctx.lineWidth = 2;
     for (const row of visible) {
-      if (row.primary_bvp === null) { previous = null; group = null; continue; }
-      const key = `${row.segment}/${row.ready}`;
-      const x = l + (row.time_s - start) / 10 * (r - l), y = (t + b) / 2 - row.primary_bvp * 1000 / limit * (b - t) / 2;
+      if (!Number.isFinite(row[signalKey])) { previous = null; group = null; continue; }
+      const ready=row.ready&&(!spectral||row.spectral_ready),key = `${row.segment}/${ready}`;
+      const x = l + (row.time_s - start) / 10 * (r - l), y = (t + b) / 2 - row[signalKey] * 1000 / limit * (b - t) / 2;
       if (previous && key === group) {
-        ctx.strokeStyle = row.ready ? '#7ce0c4' : '#8393a5'; ctx.beginPath();
+        ctx.strokeStyle = ready ? '#7ce0c4' : '#8393a5'; ctx.beginPath();
         ctx.moveTo(previous[0], previous[1]); ctx.lineTo(x, y); ctx.stroke();
       }
       group = key; previous = [x, y];

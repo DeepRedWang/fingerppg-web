@@ -1,7 +1,6 @@
 'use strict';
-importScripts('ppg-core.js?v=9-green');
-const processor = new FingerPPG.PrimaryStream();
-const hrvTracker = new FingerPPG.HRVTracker();
+importScripts('ppg-core.js?v=9-green', 'spectral-motion.js?v=10');
+let pipeline;
 self.onmessage = event => {
   const {id, t, frame, pixels} = event.data;
   let {rgb} = event.data;
@@ -12,8 +11,8 @@ self.onmessage = event => {
       for (let i=0;i<pixels.length;i+=4) { rgb[0]+=pixels[i]; rgb[1]+=pixels[i+1]; rgb[2]+=pixels[i+2]; }
       rgb = rgb.map(value=>value/(pixels.length/4));
     }
-    const rows = processor.feed(t, rgb[0], rgb[1]);
-    const hrv = rows.map(row=>hrvTracker.feed(row)).filter(Boolean);
-    self.postMessage({kind: 'result', id, t, rgb, frame, rows, hrv, processing_ms: performance.now() - start});
+    if(!pipeline)pipeline=new FingerSpectral.Pipeline(!!event.data.spectral);
+    const result=pipeline.feed(t,rgb,event.data.imu||[]);
+    self.postMessage({kind: 'result', id, t, rgb, frame, ...result, processing_ms: performance.now() - start});
   } catch (error) { self.postMessage({kind: 'error', message: error.message}); }
 };
