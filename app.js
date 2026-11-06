@@ -305,7 +305,7 @@
       this.spectralWindows=[];this.spectralStatus=this.spectralEnabled?'warming_up':'disabled';this.latestSpectralRow=null;
       if(this.spectralEnabled)$('imu-enabled').checked=true;
       this.motion.reset(mode, this.origin, !!$('imu-enabled').checked);
-      this.metadata = {version: 11, build: 'red-spectral-v11', ppg_channel: 'red', mode, started_at: new Date().toISOString(), backend: null, video_uploaded: false,
+      this.metadata = {version: 12, build: 'red-short-spectral-v12', ppg_channel: 'red', mode, started_at: new Date().toISOString(), backend: null, video_uploaded: false,
         spectral_filter:{enabled:this.spectralEnabled,...FingerSpectral.SETTINGS},
         hrv: {source:'PPG pulse-to-pulse intervals (PRV), not ECG RR/NN intervals',window_s:30,update_s:5,
           time_domain:'SDRR: sample standard deviation (N-1); RMSSD: RMS successive differences; pNN50: differences strictly greater than 50 ms / (N-1) * 100.',
@@ -328,7 +328,7 @@
       $('mode-pill').className = 'mode-pill ' + (mode === 'demo' ? 'demo' : 'live');
       this.processor = null;
       try {
-        this.worker = new Worker('worker.js?v=11-red');
+        this.worker = new Worker('worker.js?v=12-short');
         const token = this.token;
         this.worker.onmessage = event => {
           if (token !== this.token || !this.running) return;
@@ -588,11 +588,11 @@
       const times = this.mode === 'camera' ? this.cameraEvents.slice(first).map(event=>event.time_s) : this.arrivals;
       const n = times.length, rate = n > 1 ? (n-1)/(times[n-1]-times[0]) : 0;
       const validSpectrum=!this.spectralEnabled||(!['warming_up','invalid_ppg','missing_imu','overlap_ambiguous','no_pulse_candidate'].includes(this.spectralStatus)&&
-        row?.spectral_ready&&this.lastTime-row.time_s<=6.2);
+        row?.spectral_ready&&this.lastTime-row.time_s<=FingerSpectral.SETTINGS.output_delay_s[1]+.5);
       const bpm=this.spectralEnabled?row?.spectral_heart_rate_bpm:row?.heart_rate_bpm;
       $('bpm').textContent = !this.cameraStalled && !this.cameraMuted && validSpectrum && Number.isFinite(bpm) ? bpm.toFixed(0) : '—';
       if (!this.cameraStalled && !this.cameraMuted) {
-        $('status').textContent = this.spectralEnabled?'频域去伪影测试 · 输出延迟约 4–5 秒':PPGView.statusText(row);
+        $('status').textContent = this.spectralEnabled?'短时频域去伪影 · 输出延迟约 2–2.25 秒':PPGView.statusText(row);
         if (this.mode === 'camera') $('camera-state').textContent = '采集中';
       }
       $('fps').textContent = rate.toFixed(1); $('elapsed').textContent = (this.mode === 'camera' ? clockTime : this.lastTime).toFixed(1);
@@ -602,14 +602,14 @@
       this.renderSpectral();
     }
     renderSpectral(){
-      const labels={disabled:'频域去伪影已关闭',warming_up:'累计 8 秒有效信号，准备频域输出',invalid_ppg:'红通道信号无效或初始化中',
+      const labels={disabled:'频域去伪影已关闭',warming_up:'累计 4 秒有效信号，准备短窗频域输出',invalid_ppg:'红通道信号无效或初始化中',
         missing_imu:'IMU 缺失或有长缺口 · 本窗口未处理',overlap_ambiguous:'心搏与运动频率接近 · 本窗口不消除、不输出滤波心率',
         no_pulse_candidate:'没有可区分的脉搏峰 · 本窗口未处理',quiet:'运动较小 · 保留原波形',no_shared_peaks:'未找到共同运动峰 · 保留原波形',filtering:'已抑制共同运动频率 · 实验结果'};
       $('spectral-status').textContent=labels[this.spectralStatus||'disabled'];
       const latest=this.spectralWindows?.at(-1);
       $('spectral-detail').textContent=this.spectralEnabled&&latest?
-        `IMU 主峰 ${latest.motion_peaks_hz.map(f=>f.toFixed(2)).join(' / ')||'—'} Hz；抑制 ${latest.suppressed_peaks_hz.map(f=>f.toFixed(2)).join(' / ')||'—'} Hz`:
-        '8 秒滑窗 · 每秒更新 · 输出延迟约 4–5 秒；开启后暂停 HRV 与自动 AI。';
+        `4 秒滑窗 · 每 250 毫秒更新；IMU 主峰 ${latest.motion_peaks_hz.map(f=>f.toFixed(2)).join(' / ')||'—'} Hz；抑制 ${latest.suppressed_peaks_hz.map(f=>f.toFixed(2)).join(' / ')||'—'} Hz`:
+        '采集前勾选 · 4 秒滑窗 · 每 250 毫秒更新 · 延迟约 2–2.25 秒；开启后暂停 HRV 与自动 AI。';
       if(this.spectralEnabled){
         $('report-status').textContent='频域测试';$('report-window').textContent='红通道 + 三轴 IMU 功率谱';
         $('report-metrics').textContent=$('spectral-status').textContent;

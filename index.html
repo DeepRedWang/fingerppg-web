@@ -10,9 +10,9 @@
   <link rel="stylesheet" href="style.css?v=10-spectral">
   <script src="ppg-core.js?v=11-red" defer></script>
   <script src="ppg-view.js?v=11-red" defer></script>
-  <script src="spectral-motion.js?v=10" defer></script>
+  <script src="spectral-motion.js?v=12-short" defer></script>
   <script src="llm.js?v=8-ai5" defer></script>
-  <script src="app.js?v=11-red" defer></script>
+  <script src="app.js?v=12-short" defer></script>
 </head>
 <body>
   <div class="shell">
@@ -44,7 +44,7 @@
             <div class="card-heading"><h2 id="wave-heading">红通道实时波形</h2><span id="wave-legend">最近 10 秒</span></div>
             <label class="imu-switch spectral-switch"><input id="spectral-enabled" type="checkbox"> IMU 频域去伪影（实验）</label>
             <p id="spectral-status" class="caption" role="status">频域去伪影已关闭</p>
-            <p id="spectral-detail" class="caption">8 秒滑窗 · 每秒更新 · 输出延迟约 4–5 秒；开启后暂停 HRV 与自动 AI。</p>
+            <p id="spectral-detail" class="caption">采集前勾选 · 4 秒滑窗 · 每 250 毫秒更新 · 延迟约 2–2.25 秒；开启后暂停 HRV 与自动 AI。</p>
             <canvas id="wave" aria-label="最近十秒的红通道脉搏波形"></canvas>
             <div class="stats"><div><span>实际到帧率</span><strong id="fps">—</strong><small>Hz</small></div><div><span>采集时长</span><strong id="elapsed">0.0</strong><small>s</small></div><div><span>红通道均值</span><strong id="red">—</strong></div></div>
           </section>
@@ -107,7 +107,7 @@
         <p>心率为算法估计，尚未进行参考心率验证。时间戳记录浏览器帧回调时刻，不是硬件曝光时间。</p>
       </div></details>
     </main>
-    <footer><span>FingerPPG · 红通道 + 频域去伪影 v11</span><span>本地采集计算 · AI 解读可选 · 无补光</span></footer>
+    <footer><span>FingerPPG · 红通道 + 短窗去伪影 v12</span><span>本地采集计算 · AI 解读可选 · 无补光</span></footer>
   </div>
   <noscript>本页面需要启用 JavaScript 才能采集和显示波形。</noscript>
 </body>

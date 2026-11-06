@@ -2,13 +2,18 @@
 (function(root){
   'use strict';
   const defaultCore=typeof module!=='undefined'&&module.exports?require('./ppg-core'):root.FingerPPG;
-  const SETTINGS=Object.freeze({revision:'spectral-v1',fs_hz:60,window_s:8,hop_s:1,
-    reconstruction_center_s:2,output_delay_s:[4,5],fft_size:1024,
-    frequency_resolution_hz:.125,motion_band_hz:[.5,5],hr_band_bpm:[40,200],
-    peak_match_hz:.20,notch_flat_width_hz:.12,notch_half_width_hz:.32,minimum_gain:.10,
+  const SETTINGS=Object.freeze({revision:'spectral-short-v2',fs_hz:60,window_s:4,hop_s:.25,
+    reconstruction_center_s:.5,output_delay_s:[2,2.25],fft_size:512,
+    frequency_resolution_hz:.25,motion_band_hz:[.5,5],hr_band_bpm:[40,200],
+    peak_match_hz:.25,pulse_motion_exclusion_hz:.5,pulse_protection_hz:.25,
+    notch_flat_width_hz:.25,notch_half_width_hz:.64,minimum_gain:.10,
     min_motion_rms_m_s2:.04,max_imu_gap_s:.25,max_edge_hold_s:.12,
     max_abs_acceleration_m_s2:100,hrv_policy:'Withheld for the entire enabled experimental session; filtered beat timing is not validated.',
     method:'Sum of three independent IMU power spectra; shared spectral peaks attenuated in the PPG complex spectrum, preserving PPG phase. Central-window overlap-add reconstruction; no IMU phase or samplewise regression.'});
+  const WINDOW_SAMPLES=Math.round(SETTINGS.window_s*SETTINGS.fs_hz);
+  const HOP_SAMPLES=Math.round(SETTINGS.hop_s*SETTINGS.fs_hz);
+  const CENTER_SAMPLES=Math.round(SETTINGS.reconstruction_center_s*SETTINGS.fs_hz);
+  const CENTER_START=(WINDOW_SAMPLES-CENTER_SAMPLES)/2,CENTER_END=CENTER_START+CENTER_SAMPLES;
   const FIELDS=['accel_x_m_s2','accel_y_m_s2','accel_z_m_s2'];
   const median=a=>{const b=[...a].sort((x,y)=>x-y),i=b.length>>1;return b.length%2?b[i]:(b[i-1]+b[i])/2;};
   function fft(re,im,inverse=false){
@@ -51,7 +56,8 @@
       rms+=axis.reduce((s,v,i)=>s+(v-a.mean-a.slope*(i-a.center))**2,0)/axis.length;}
     rms=Math.sqrt(rms);
     const pulsePeaks=peaks(p.power,40/60,200/60,.02),motionPeaks=peaks(motionPower,.5,5,.08).slice(0,8);
-    const closeToMotion=f=>motionPeaks.some(m=>Math.abs(m.f-f)<SETTINGS.peak_match_hz);
+    // A four-second Hann window cannot safely separate nearby pulse/motion peaks.
+    const closeToMotion=f=>motionPeaks.some(m=>Math.abs(m.f-f)<SETTINGS.pulse_motion_exclusion_hz);
     const cleanPeaks=pulsePeaks.filter(v=>!closeToMotion(v.f));
     let pulse=cleanPeaks[0]||null,status='no_shared_peaks',targets=[];
     if(rms<SETTINGS.min_motion_rms_m_s2){pulse=pulsePeaks[0]||null;status='quiet';}
@@ -63,7 +69,7 @@
     else{
       // Protect the candidate fundamental. Harmonics may overlap motion;
       // this is why reconstructed morphology and beat intervals are unvalidated.
-      const protectedAt=f=>Math.abs(f-pulse.f)<.22;
+      const protectedAt=f=>Math.abs(f-pulse.f)<SETTINGS.pulse_protection_hz;
       targets=motionPeaks.filter(m=>!protectedAt(m.f)&&
         peaks(p.power,.5,5,.02).some(v=>Math.abs(v.f-m.f)<SETTINGS.peak_match_hz));
       for(let k=0;k<gains.length;k++)for(const target of targets){
@@ -79,7 +85,7 @@
     if(status==='filtering'){
       for(let k=0;k<p.re.length;k++){const gain=gains[Math.min(k,p.re.length-k)];p.re[k]*=gain;p.im[k]*=gain;}
       fft(p.re,p.im,true);
-      for(let i=180;i<300;i++)output[i]=p.re[i]/p.window[i]+p.mean+p.slope*(i-p.center);
+      for(let i=CENTER_START;i<CENTER_END;i++)output[i]=p.re[i]/p.window[i]+p.mean+p.slope*(i-p.center);
     }
     return {output,status,pulse_hz:pulse?.f??null,motion_rms:rms,motion_peaks_hz:motionPeaks.map(v=>v.f),
       suppressed_peaks_hz:targets.map(v=>v.f),frequencies_hz:motionPower.map((_,k)=>frequency(k)),
@@ -92,7 +98,7 @@
     push(imu){
       for(const row of imu){if(!Number.isFinite(row.time_s)||(this.lastImuTime!==null&&row.time_s<=this.lastImuTime))continue;
         this.lastImuTime=row.time_s;this.imu.push({t:row.time_s,values:FIELDS.map(k=>row[k])});}
-      const cutoff=(this.lastImuTime??0)-16;
+      const cutoff=(this.lastImuTime??0)-(SETTINGS.window_s+2);
       while(this.imu.length>2&&this.imu[1].t<cutoff)this.imu.shift();
       if(this.imu.length>3000)this.imu.splice(0,this.imu.length-3000);
     }
@@ -100,12 +106,12 @@
       let first=0;while(first+1<this.imu.length&&this.imu[first+1].t<start)first++;
       let last=first;while(last+1<this.imu.length&&this.imu[last].t<end)last++;
       const rows=this.imu.slice(first,last+1);
-      if(rows.length<80||rows[0].t-start>SETTINGS.max_edge_hold_s||end-rows.at(-1).t>SETTINGS.max_edge_hold_s)return null;
+      if(rows.length<Math.ceil(SETTINGS.window_s*10)||rows[0].t-start>SETTINGS.max_edge_hold_s||end-rows.at(-1).t>SETTINGS.max_edge_hold_s)return null;
       if(rows.some((r,i)=>r.values.some(v=>!Number.isFinite(v)||Math.abs(v)>100)||
           (i&&r.t-rows[i-1].t>SETTINGS.max_imu_gap_s)))return null;
       const axes=[[],[],[]];let cursor=0;
-      for(let i=0;i<480;i++){
-        const t=start+i/60;while(cursor+1<rows.length&&rows[cursor+1].t<t)cursor++;
+      for(let i=0;i<WINDOW_SAMPLES;i++){
+        const t=start+i/SETTINGS.fs_hz;while(cursor+1<rows.length&&rows[cursor+1].t<t)cursor++;
         const a=rows[cursor],b=rows[Math.min(rows.length-1,cursor+1)],w=b.t>a.t?Math.max(0,Math.min(1,(t-a.t)/(b.t-a.t))):0;
         for(let k=0;k<3;k++)axes[k].push(a.values[k]+w*(b.values[k]-a.values[k]));
       }
@@ -115,11 +121,11 @@
     }
     feed(row,availableTime){
       if(!row.ready||!Number.isFinite(row.primary_bvp)){this.reset();this.status='invalid_ppg';return {rows:[],windows:[]};}
-      if(this.segment!==row.segment||(this.lastTime!==null&&Math.abs(row.time_s-this.lastTime-1/60)>1e-6))this.reset();
+      if(this.segment!==row.segment||(this.lastTime!==null&&Math.abs(row.time_s-this.lastTime-1/SETTINGS.fs_hz)>1e-6))this.reset();
       this.segment=row.segment;this.lastTime=row.time_s;this.buffer.push(row);this.sinceWindow++;
-      if(this.buffer.length<480)return {rows:[],windows:[]};
-      if(this.buffer.length>480)this.buffer.shift();
-      if(this.sinceWindow<60)return {rows:[],windows:[]};this.sinceWindow=0;
+      if(this.buffer.length<WINDOW_SAMPLES)return {rows:[],windows:[]};
+      if(this.buffer.length>WINDOW_SAMPLES)this.buffer.shift();
+      if(this.sinceWindow<HOP_SAMPLES)return {rows:[],windows:[]};this.sinceWindow=0;
       const start=this.buffer[0].time_s,end=this.buffer.at(-1).time_s,axes=this.reference(start,end);
       const prior=this.previousPulseTime!==null&&end-this.previousPulseTime<5?this.previousPulse:null;
       const result=axes?analyzeWindow(this.buffer.map(r=>r.primary_bvp),axes,prior):
@@ -131,15 +137,15 @@
         motion_peaks_hz:result.motion_peaks_hz,suppressed_peaks_hz:result.suppressed_peaks_hz};
       this.lastDiagnostic=diagnostic;
       const trusted=!['overlap_ambiguous','missing_imu','no_pulse_candidate'].includes(result.status);
-      for(let i=180;i<300;i++){
-        const source=this.buffer[i],key=source.time_s.toFixed(6),w=.5-.5*Math.cos(2*Math.PI*(i-180)/120);
+      for(let i=CENTER_START;i<CENTER_END;i++){
+        const source=this.buffer[i],key=source.time_s.toFixed(6),w=.5-.5*Math.cos(2*Math.PI*(i-CENTER_START)/CENTER_SAMPLES);
         const a=this.accum.get(key)||{value:0,weight:0,trusted:true,source,status:result.status};
         a.value+=result.output[i]*w;a.weight+=w;a.trusted&&=trusted;
         if(!trusted)a.status=result.status;
         this.accum.set(key,a);
       }
       const output=[];
-      for(let i=180;i<240;i++){
+      for(let i=CENTER_START;i<CENTER_START+HOP_SAMPLES;i++){
         const source=this.buffer[i],key=source.time_s.toFixed(6),a=this.accum.get(key);this.accum.delete(key);
         const filtered=a.weight>1e-9?a.value/a.weight:source.primary_bvp;
         output.push({...source,filtered_bvp:filtered,spectral_status:a.trusted?result.status:a.status,
